@@ -88,7 +88,7 @@ def _parse_excel_numeric(value: Any) -> float:
 
 def _load_local_base_ladder_overrides() -> tuple[list[dict[str, Any]], str | None]:
     cwd = Path.cwd()
-    search_dirs = [cwd, cwd.parent / "pricing demo tool"]
+    search_dirs = [cwd]
     files: list[Path] = []
     for directory in search_dirs:
         if not directory.exists():
