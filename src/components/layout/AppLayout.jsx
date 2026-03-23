@@ -32,15 +32,23 @@ const AppLayout = ({
   const stepParam = new URLSearchParams(location.search).get('step') || '1'
 
   const isNavActive = (item) => {
+    const targetHref = String(item.href || '')
+    const [targetPath, targetQuery = ''] = targetHref.split('?')
+    const targetStep = new URLSearchParams(targetQuery).get('step')
+
     if (item.href === '/') {
       return location.pathname === '/'
     }
 
-    if (item.step) {
-      return location.pathname === '/portfolio' && stepParam === item.step
+    if (targetStep) {
+      return location.pathname === targetPath && stepParam === targetStep
     }
 
-    return location.pathname === item.href
+    if (item.step) {
+      return stepParam === item.step
+    }
+
+    return location.pathname === targetPath
   }
 
   return (

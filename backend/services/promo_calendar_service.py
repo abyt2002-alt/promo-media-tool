@@ -3,10 +3,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import math
+import os
 import random
 import re
+import urllib.error
+import urllib.request
 import xml.etree.ElementTree as ET
+from functools import lru_cache
 from typing import Any, Callable
+import pandas as pd
 
 from backend.schemas.promo_calendar import (
     PromoBestMarkers,
@@ -14,6 +19,10 @@ from backend.schemas.promo_calendar import (
     PromoCalendarRecalculateRequest,
     PromoCalendarRecalculateResponse,
     PromoCalendarResponse,
+    PromoElasticityInsightRow,
+    PromoElasticityInsightsResponse,
+    PromoHistoricalProductRow,
+    PromoHistoricalResponse,
     PromoPortfolioTotals,
     PromoProductImpact,
     PromoScenarioDetail,
@@ -64,7 +73,29 @@ BUCKET_SIZE = 500
 TOTAL_TARGET = 1500
 OBJECTIVE_BUCKETS: tuple[str, ...] = ("volume", "revenue", "profit")
 PROMO_ALLOWED_LEVELS = (0.0, 10.0, 20.0, 30.0, 40.0)
+DEFAULT_BUCKET_FAMILY_WEIGHTS: dict[str, list[float]] = {
+    "volume": [0.52, 0.30, 0.18],
+    "revenue": [0.20, 0.56, 0.24],
+    "profit": [0.20, 0.30, 0.50],
+}
+STEP_UP_PACE_PRESETS: dict[str, tuple[float, float, float]] = {
+    "steady": (0.66, 0.26, 0.08),
+    "balanced": (0.40, 0.42, 0.18),
+    "fast": (0.18, 0.38, 0.44),
+}
+PACE_LEVEL_SCALE: dict[str, tuple[float, float, float, float]] = {
+    "steady": (1.20, 1.05, 0.90, 0.75),
+    "balanced": (1.0, 1.0, 1.0, 1.0),
+    "fast": (0.75, 0.90, 1.10, 1.25),
+}
+COVERAGE_NO_PROMO_MULTIPLIER: dict[str, float] = {
+    "few_groups": 1.55,
+    "balanced": 1.0,
+    "broad_groups": 0.45,
+}
+PROMO_AI_INTENT_FALLBACK = "Fallback default family mix (500 per objective bucket)."
 PROMO_CONTEXT_CACHE_FILE = "promo_calendar_context_latest.json"
+RAW_PROMO_FILE_NAME = "D0_TShirt_2024_Material_New Launches 1.xlsx"
 
 
 def _safe_float(value: Any, fallback: float = 0.0) -> float:
@@ -73,6 +104,210 @@ def _safe_float(value: Any, fallback: float = 0.0) -> float:
     except (TypeError, ValueError):
         return fallback
     return parsed
+
+
+def _normalize_weights(weights: list[float]) -> list[float]:
+    non_negative = [max(0.0, float(item)) for item in weights]
+    total = sum(non_negative)
+    if total <= 0:
+        return [1.0 / max(1, len(weights)) for _ in weights]
+    return [item / total for item in non_negative]
+
+
+def _extract_first_json_object(raw_text: str) -> dict[str, Any] | None:
+    text = str(raw_text or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            parsed = json.loads(text[start : end + 1])
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return None
+    return None
+
+
+def _call_gemini_json(prompt_text: str, temperature: float = 0.15, timeout_seconds: int = 35) -> dict[str, Any] | None:
+    api_key = (os.getenv("GEMINI_API_KEY") or "").strip()
+    if not api_key:
+        return None
+
+    model_name = (os.getenv("GEMINI_MODEL") or "gemini-2.5-flash").strip()
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+    payload = {
+        "contents": [{"role": "user", "parts": [{"text": prompt_text}]}],
+        "generationConfig": {
+            "temperature": float(temperature),
+            "responseMimeType": "application/json",
+        },
+    }
+    req = urllib.request.Request(
+        url=url,
+        data=json.dumps(payload).encode("utf-8"),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_seconds) as response:
+            raw = response.read().decode("utf-8")
+            parsed = json.loads(raw)
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError):
+        return None
+
+    candidates = parsed.get("candidates") or []
+    if not candidates:
+        return None
+    parts = ((candidates[0].get("content") or {}).get("parts") or [])
+    text = ""
+    for part in parts:
+        if isinstance(part, dict) and isinstance(part.get("text"), str):
+            text += part["text"]
+    return _extract_first_json_object(text)
+
+
+def _normalize_objective_key(value: Any) -> str | None:
+    text = str(value or "").strip().lower().replace(" ", "_")
+    aliases = {
+        "volume": "volume",
+        "max_volume": "volume",
+        "revenue": "revenue",
+        "max_revenue": "revenue",
+        "profit": "profit",
+        "max_profit": "profit",
+    }
+    return aliases.get(text)
+
+
+def _normalize_step_up_pace(value: Any) -> str:
+    text = str(value or "").strip().lower().replace(" ", "_")
+    if text in ("steady", "slow", "gradual"):
+        return "steady"
+    if text in ("fast", "aggressive", "rapid"):
+        return "fast"
+    return "balanced"
+
+
+def _normalize_coverage_bias(value: Any) -> str:
+    text = str(value or "").strip().lower().replace(" ", "_")
+    if text in ("few", "few_groups", "focused", "narrow"):
+        return "few_groups"
+    if text in ("broad", "broad_groups", "wide", "aggressive_coverage"):
+        return "broad_groups"
+    return "balanced"
+
+
+def _build_promo_gemini_prompt(prompt: str) -> str:
+    user_prompt = str(prompt or "").strip()
+    return (
+        "You are tuning promo-calendar scenario generation biases.\n"
+        "Return strict JSON only.\n"
+        "You are ONLY allowed to control these fields:\n"
+        "1) Family mix weights for each objective bucket (volume/revenue/profit)\n"
+        "2) Step-up pace bias (steady|balanced|fast)\n"
+        "3) Coverage bias (few_groups|balanced|broad_groups)\n"
+        "Do not output anything else.\n"
+        "Family order for weights is fixed as:\n"
+        "[Volume Driver, Revenue Builder, Profit Guard]\n"
+        "Output schema:\n"
+        "{\n"
+        '  "intent_summary": "short text",\n'
+        '  "bucket_mix": {\n'
+        '    "volume": [0.52, 0.30, 0.18],\n'
+        '    "revenue": [0.20, 0.56, 0.24],\n'
+        '    "profit": [0.20, 0.30, 0.50]\n'
+        "  },\n"
+        '  "step_up_pace_bias": "balanced",\n'
+        '  "coverage_bias": "balanced"\n'
+        "}\n"
+        "Rules:\n"
+        "- Keep all weights >= 0; they will be normalized.\n"
+        "- Keep step_up_pace_bias in {steady, balanced, fast}.\n"
+        "- Keep coverage_bias in {few_groups, balanced, broad_groups}.\n"
+        "- No commentary outside JSON.\n"
+        f"User intent: {user_prompt}\n"
+    )
+
+
+def _resolve_ai_generation_controls(prompt: str | None) -> dict[str, Any]:
+    fallback_mix = {key: list(value) for key, value in DEFAULT_BUCKET_FAMILY_WEIGHTS.items()}
+    fallback = {
+        "ai_source": "fallback_default",
+        "intent_summary": PROMO_AI_INTENT_FALLBACK,
+        "bucket_mix": fallback_mix,
+        "step_up_pace_bias": "balanced",
+        "coverage_bias": "balanced",
+    }
+    user_prompt = str(prompt or "").strip()
+    if not user_prompt:
+        return fallback
+
+    gemini_payload = _call_gemini_json(_build_promo_gemini_prompt(user_prompt), temperature=0.15, timeout_seconds=35)
+    if not isinstance(gemini_payload, dict):
+        return fallback
+
+    raw_mix = gemini_payload.get("bucket_mix")
+    if not isinstance(raw_mix, dict):
+        raw_mix = {}
+
+    resolved_mix: dict[str, list[float]] = {key: list(value) for key, value in fallback_mix.items()}
+    for raw_key, raw_weights in raw_mix.items():
+        objective = _normalize_objective_key(raw_key)
+        if objective is None or not isinstance(raw_weights, (list, tuple)):
+            continue
+        if len(raw_weights) < len(FAMILY_PROFILES):
+            continue
+        resolved_mix[objective] = _normalize_weights(
+            [_safe_float(raw_weights[0], 0.0), _safe_float(raw_weights[1], 0.0), _safe_float(raw_weights[2], 0.0)]
+        )
+
+    return {
+        "ai_source": "gemini",
+        "intent_summary": str(gemini_payload.get("intent_summary") or user_prompt).strip() or user_prompt,
+        "bucket_mix": resolved_mix,
+        "step_up_pace_bias": _normalize_step_up_pace(gemini_payload.get("step_up_pace_bias")),
+        "coverage_bias": _normalize_coverage_bias(gemini_payload.get("coverage_bias")),
+    }
+
+
+def _apply_family_generation_biases(
+    family: dict[str, Any],
+    *,
+    step_up_pace_bias: str,
+    coverage_bias: str,
+) -> dict[str, Any]:
+    paced = _normalize_step_up_pace(step_up_pace_bias)
+    coverage = _normalize_coverage_bias(coverage_bias)
+    pace_target = STEP_UP_PACE_PRESETS[paced]
+    pace_level_scale = PACE_LEVEL_SCALE[paced]
+    coverage_multiplier = COVERAGE_NO_PROMO_MULTIPLIER[coverage]
+
+    transition_weights = tuple(_safe_float(value, 0.0) for value in family.get("transition_weights", (0.4, 0.4, 0.2)))
+    transition_blend = _normalize_weights(
+        [0.55 * transition_weights[idx] + 0.45 * pace_target[idx] for idx in range(len(pace_target))]
+    )
+    level_weights = tuple(_safe_float(value, 0.0) for value in family.get("level_weights", (0.25, 0.25, 0.25, 0.25)))
+    level_blend = _normalize_weights(
+        [level_weights[idx] * pace_level_scale[idx] for idx in range(min(len(level_weights), len(pace_level_scale)))]
+    )
+
+    no_promo_prob = _safe_float(family.get("no_promo_prob"), 0.15)
+    no_promo_prob = max(0.02, min(0.75, no_promo_prob * coverage_multiplier))
+
+    return {
+        **family,
+        "no_promo_prob": no_promo_prob,
+        "transition_weights": tuple(transition_blend),
+        "level_weights": tuple(level_blend),
+    }
 
 
 def _parse_excel_numeric(value: Any) -> float:
@@ -244,6 +479,25 @@ def _resolve_anchor_base_volumes(
         key = _normalize_product_key(row.get("productName"))
         resolved.append(float(override_map.get(key, defaults[idx])))
     return resolved
+
+
+def _scope_keys_from_overrides(overrides: list[Any] | None) -> set[str]:
+    keys: set[str] = set()
+    for item in overrides or []:
+        if isinstance(item, dict):
+            product_name = item.get("product_name")
+        else:
+            product_name = getattr(item, "product_name", None)
+        key = _normalize_product_key(product_name)
+        if key:
+            keys.add(key)
+    return keys
+
+
+def _filter_rows_by_scope(rows: list[dict[str, Any]], scope_keys: set[str]) -> list[dict[str, Any]]:
+    if not scope_keys:
+        return rows
+    return [row for row in rows if _normalize_product_key(row.get("productName")) in scope_keys]
 
 
 def _persist_context_snapshot(
@@ -652,12 +906,17 @@ def _enrich_candidate(
     }
 
 
-def _bucket_family_weights(objective: str) -> list[float]:
-    if objective == "volume":
-        return [0.52, 0.30, 0.18]
-    if objective == "profit":
-        return [0.20, 0.30, 0.50]
-    return [0.20, 0.56, 0.24]
+def _bucket_family_weights(objective: str, ai_controls: dict[str, Any] | None = None) -> list[float]:
+    normalized_objective = _normalize_objective_key(objective) or "revenue"
+    if isinstance(ai_controls, dict):
+        bucket_mix = ai_controls.get("bucket_mix")
+        if isinstance(bucket_mix, dict):
+            candidate = bucket_mix.get(normalized_objective)
+            if isinstance(candidate, (list, tuple)) and len(candidate) >= len(FAMILY_PROFILES):
+                return _normalize_weights(
+                    [_safe_float(candidate[0], 0.0), _safe_float(candidate[1], 0.0), _safe_float(candidate[2], 0.0)]
+                )
+    return _normalize_weights(list(DEFAULT_BUCKET_FAMILY_WEIGHTS.get(normalized_objective, DEFAULT_BUCKET_FAMILY_WEIGHTS["revenue"])))
 
 
 def _signature_distance_ratio(signature_a: Any, signature_b: Any) -> float:
@@ -716,8 +975,10 @@ def optimize_promo_calendar(
     all_rows = load_portfolio_rows()
     selected_month, month_rows = select_month_rows(all_rows, effective_month)
     rows = _sorted_rows(month_rows)
+    scope_keys = _scope_keys_from_overrides(effective_overrides)
+    rows = _filter_rows_by_scope(rows, scope_keys)
     if len(rows) < 2:
-        raise ValueError("At least 2 products are required for promo planning.")
+        raise ValueError("At least 2 scoped products are required for promo planning. Check result input product mapping.")
 
     _progress(progress_callback, 18, "Preparing elasticity context")
     own_current = build_own_elasticities(rows)
@@ -755,9 +1016,24 @@ def optimize_promo_calendar(
     target_count = max(3, min(TOTAL_TARGET, requested_count))
     min_gm = max(20.0, min(60.0, float(request.min_gross_margin_pct)))
     enforce_all_groups_active = min_weeks > 0
+    ai_controls = _resolve_ai_generation_controls(getattr(request, "prompt", None))
 
     _progress(progress_callback, 28, "Generating scenarios")
-    seed_value = abs(hash((selected_month, min_gm, request.min_promo_weeks, request.max_promo_weeks))) % (2**31 - 1)
+    seed_value = abs(
+        hash(
+            (
+                selected_month,
+                min_gm,
+                request.min_promo_weeks,
+                request.max_promo_weeks,
+                ai_controls.get("step_up_pace_bias"),
+                ai_controls.get("coverage_bias"),
+                tuple(round(weight, 6) for weight in ai_controls["bucket_mix"]["volume"]),
+                tuple(round(weight, 6) for weight in ai_controls["bucket_mix"]["revenue"]),
+                tuple(round(weight, 6) for weight in ai_controls["bucket_mix"]["profit"]),
+            )
+        )
+    ) % (2**31 - 1)
     rng = random.Random(seed_value)
 
     baseline_paths = {group["group_id"]: [0.0] * PROMO_WEEKS for group in groups}
@@ -778,7 +1054,9 @@ def optimize_promo_calendar(
     for objective_idx, objective in enumerate(OBJECTIVE_BUCKETS):
         _progress(progress_callback, 36 + objective_idx * 12, f"Sampling {objective.title()} scenarios")
         objective_rng = random.Random(seed_value + (objective_idx + 1) * 1009)
-        family_weights = _bucket_family_weights(objective)
+        family_weights = _bucket_family_weights(objective, ai_controls)
+        pace_bias = _normalize_step_up_pace(ai_controls.get("step_up_pace_bias"))
+        coverage_bias = _normalize_coverage_bias(ai_controls.get("coverage_bias"))
         bucket: list[dict[str, Any]] = []
         local_signatures: set[Any] = set()
 
@@ -786,7 +1064,12 @@ def optimize_promo_calendar(
         attempt_limit = 1_500_000
         while len(bucket) < BUCKET_SIZE and attempts < attempt_limit:
             attempts += 1
-            family = objective_rng.choices(list(FAMILY_PROFILES), weights=family_weights, k=1)[0]
+            sampled_family = objective_rng.choices(list(FAMILY_PROFILES), weights=family_weights, k=1)[0]
+            family = _apply_family_generation_biases(
+                sampled_family,
+                step_up_pace_bias=pace_bias,
+                coverage_bias=coverage_bias,
+            )
             group_paths: dict[str, list[float]] = {}
             signature_parts = []
             for group in groups:
@@ -1061,8 +1344,10 @@ def recalculate_promo_calendar(payload: PromoCalendarRecalculateRequest) -> Prom
     all_rows = load_portfolio_rows()
     selected_month, month_rows = select_month_rows(all_rows, effective_month)
     rows = _sorted_rows(month_rows)
+    scope_keys = _scope_keys_from_overrides(effective_overrides)
+    rows = _filter_rows_by_scope(rows, scope_keys)
     if len(rows) < 2:
-        raise ValueError("At least 2 products are required for promo recalculation.")
+        raise ValueError("At least 2 scoped products are required for promo recalculation. Check result input product mapping.")
 
     own_current = build_own_elasticities(rows)
     cross_current = build_cross_elasticity_matrix(rows)
@@ -1186,4 +1471,289 @@ def recalculate_promo_calendar(payload: PromoCalendarRecalculateRequest) -> Prom
         profit_uplift_pct=float(profit_uplift_pct),
         group_calendars=group_calendars,
         product_impacts=product_impacts,
+    )
+
+
+def _resolve_raw_promo_file() -> Path:
+    cwd = Path.cwd()
+    exact = cwd / RAW_PROMO_FILE_NAME
+    if exact.exists():
+        return exact
+    candidates = sorted(
+        [path for path in cwd.glob("*.xlsx") if "base_ladder_saved_scenarios" not in path.name.lower()],
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    if candidates:
+        return candidates[0]
+    raise FileNotFoundError(f"Raw promo file not found in {cwd}. Expected `{RAW_PROMO_FILE_NAME}`.")
+
+
+@lru_cache(maxsize=4)
+def _load_raw_promo_dataframe_cached(file_path: str, file_mtime: float) -> pd.DataFrame:
+    df = pd.read_excel(file_path, sheet_name=0)
+    required = {"Brand", "PPG", "Year", "Week", "Channel", "BasePrice", "Price", "Volume"}
+    missing = [column for column in required if column not in df.columns]
+    if missing:
+        raise ValueError(f"Raw promo file is missing required columns: {', '.join(missing)}")
+
+    clean = df.copy()
+    clean["Brand"] = pd.to_numeric(clean["Brand"], errors="coerce")
+    clean["Year"] = pd.to_numeric(clean["Year"], errors="coerce")
+    clean["Week"] = pd.to_numeric(clean["Week"], errors="coerce")
+    clean["BasePrice"] = pd.to_numeric(clean["BasePrice"], errors="coerce")
+    clean["Price"] = pd.to_numeric(clean["Price"], errors="coerce")
+    clean["Volume"] = pd.to_numeric(clean["Volume"], errors="coerce")
+    clean["Channel"] = clean["Channel"].astype(str).str.strip()
+    clean["PPG"] = clean["PPG"].astype(str).str.strip()
+
+    clean = clean.dropna(subset=["Brand", "Year", "Week", "BasePrice", "Price", "Volume"])
+    clean = clean[(clean["BasePrice"] > 0) & (clean["Price"] > 0) & (clean["Volume"] >= 0)]
+    clean["Brand"] = clean["Brand"].astype(int)
+    clean["Year"] = clean["Year"].astype(int)
+    clean["Week"] = clean["Week"].astype(int)
+    clean["product_name"] = clean.apply(lambda row: f"Brand {int(row['Brand'])} | {row['PPG']}", axis=1)
+    clean["product_key"] = clean["product_name"].map(_normalize_product_key)
+    clean["discount_pct"] = ((clean["BasePrice"] - clean["Price"]) / clean["BasePrice"]) * 100.0
+    clean["discount_pct"] = clean["discount_pct"].clip(lower=0.0, upper=95.0)
+    return clean
+
+
+def _load_raw_promo_dataframe() -> tuple[pd.DataFrame, Path]:
+    source = _resolve_raw_promo_file()
+    df = _load_raw_promo_dataframe_cached(str(source), source.stat().st_mtime)
+    return df.copy(), source
+
+
+def _get_result_input_scope_keys() -> set[str]:
+    overrides, _ = _load_local_base_ladder_overrides()
+    return {
+        _normalize_product_key(item.get("product_name"))
+        for item in overrides
+        if _normalize_product_key(item.get("product_name"))
+    }
+
+
+def _apply_raw_filters(df: pd.DataFrame, selected_year: int | None, selected_channel: str | None) -> tuple[pd.DataFrame, int, str, list[int], list[str]]:
+    if df.empty:
+        raise ValueError("Raw promo dataset is empty.")
+    years = sorted(int(year) for year in df["Year"].dropna().unique().tolist())
+    channels = sorted(str(channel) for channel in df["Channel"].dropna().unique().tolist())
+    year = int(selected_year) if selected_year in years else years[-1]
+    channel = str(selected_channel) if selected_channel in channels else (channels[0] if channels else "ALLINDIA")
+    filtered = df[(df["Year"] == year) & (df["Channel"] == channel)].copy()
+    if filtered.empty:
+        raise ValueError(f"No raw promo rows found for Year={year}, Channel={channel}.")
+    return filtered, year, channel, years, channels
+
+
+def _regression_elasticity(prices: list[float], volumes: list[float]) -> float:
+    pairs = [(math.log(p), math.log(v)) for p, v in zip(prices, volumes) if p > 0 and v > 0]
+    if len(pairs) < 3:
+        return -1.2
+    xs = [x for x, _ in pairs]
+    ys = [y for _, y in pairs]
+    mean_x = sum(xs) / len(xs)
+    mean_y = sum(ys) / len(ys)
+    denom = sum((x - mean_x) ** 2 for x in xs)
+    if abs(denom) <= 1e-12:
+        return -1.2
+    slope = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys)) / denom
+    if not math.isfinite(slope):
+        return -1.2
+    slope = -abs(float(slope))
+    return max(-5.0, min(-0.2, slope))
+
+
+def _bucket_elasticity(
+    *,
+    df: pd.DataFrame,
+    target_discount: int,
+    base_price: float,
+    base_volume: float,
+    fallback: float,
+) -> float:
+    bucket = df[df["discount_pct"].between(target_discount - 5, target_discount + 5)]
+    if bucket.empty:
+        return max(-5.0, min(-0.2, fallback * (1.0 + (target_discount / 100.0) * 0.25)))
+
+    price_at_bucket = float(bucket["Price"].mean())
+    volume_at_bucket = float(bucket["Volume"].mean())
+    if base_price <= 0 or base_volume <= 0 or price_at_bucket <= 0 or volume_at_bucket <= 0:
+        return max(-5.0, min(-0.2, fallback))
+
+    pct_p = (price_at_bucket - base_price) / base_price
+    if abs(pct_p) <= 1e-9:
+        return max(-5.0, min(-0.2, fallback))
+    pct_q = (volume_at_bucket - base_volume) / base_volume
+    value = pct_q / pct_p
+    if not math.isfinite(value):
+        value = fallback
+    value = -abs(float(value))
+    return max(-5.0, min(-0.2, value))
+
+
+def _fit_linear_demand(prices: list[float], volumes: list[float]) -> tuple[float, float] | None:
+    pairs = [(float(p), float(v)) for p, v in zip(prices, volumes) if float(p) > 0 and float(v) > 0]
+    if len(pairs) < 2:
+        return None
+    n = float(len(pairs))
+    sum_x = sum(p for p, _ in pairs)
+    sum_y = sum(v for _, v in pairs)
+    sum_xx = sum(p * p for p, _ in pairs)
+    sum_xy = sum(p * v for p, v in pairs)
+    denom = n * sum_xx - (sum_x * sum_x)
+    if abs(denom) <= 1e-9:
+        return None
+    slope = (n * sum_xy - sum_x * sum_y) / denom
+    intercept = (sum_y - slope * sum_x) / n
+    if not (math.isfinite(slope) and math.isfinite(intercept)):
+        return None
+    return float(intercept), float(slope)
+
+
+def _point_elasticity_series(
+    *,
+    prices: list[float],
+    volumes: list[float],
+    base_price: float,
+    base_volume: float,
+    fallback: float,
+) -> tuple[float, float, float, float, float]:
+    # Point elasticity definition: E(P) = (dQ/dP) * (P / Q(P)).
+    fit = _fit_linear_demand(prices, volumes)
+
+    if fit is not None:
+        intercept, slope = fit
+    else:
+        slope = (float(fallback) * max(float(base_volume), 1.0)) / max(float(base_price), 1e-6)
+        intercept = max(float(base_volume), 1.0) - slope * float(base_price)
+
+    # Force economically sensible own-price response.
+    if slope >= 0:
+        slope = -abs((float(fallback) * max(float(base_volume), 1.0)) / max(float(base_price), 1e-6))
+        intercept = max(float(base_volume), 1.0) - slope * float(base_price)
+
+    # Keep base point feasible.
+    q_base = intercept + slope * float(base_price)
+    if q_base <= 1e-6:
+        intercept = max(float(base_volume), 1.0) - slope * float(base_price)
+
+    levels = [0, 10, 20, 30, 40]
+    values: list[float] = []
+    prev = None
+    for discount in levels:
+        price_point = max(1e-6, float(base_price) * (1.0 - discount / 100.0))
+        volume_point = max(1.0, intercept + slope * price_point)
+        elasticity = slope * price_point / volume_point
+        if not math.isfinite(elasticity):
+            elasticity = float(fallback)
+        elasticity = -abs(float(elasticity))
+        elasticity = max(-5.0, min(-0.2, elasticity))
+        # With higher discount (lower P), elasticity should move toward zero (non-decreasing numerically).
+        if prev is not None and elasticity < prev:
+            elasticity = prev
+        prev = elasticity
+        values.append(elasticity)
+
+    return float(values[0]), float(values[1]), float(values[2]), float(values[3]), float(values[4])
+
+
+def get_historical_promo_calendar(
+    selected_year: int | None = None,
+    selected_channel: str | None = None,
+) -> PromoHistoricalResponse:
+    raw_df, source_file = _load_raw_promo_dataframe()
+    scope_keys = _get_result_input_scope_keys()
+    if scope_keys:
+        raw_df = raw_df[raw_df["product_key"].isin(scope_keys)].copy()
+    filtered, year, channel, years, channels = _apply_raw_filters(raw_df, selected_year, selected_channel)
+    weeks = sorted(int(week) for week in filtered["Week"].dropna().unique().tolist())
+    grouped = (
+        filtered.groupby(["product_name", "Brand", "PPG", "Week"], as_index=False)
+        .agg(
+            discount_pct=("discount_pct", "mean"),
+            price=("Price", "mean"),
+            base_price=("BasePrice", "mean"),
+            volume=("Volume", "sum"),
+        )
+    )
+
+    products: list[PromoHistoricalProductRow] = []
+    for (product_name, brand, ppg), chunk in grouped.groupby(["product_name", "Brand", "PPG"], as_index=False):
+        by_week = {int(row["Week"]): row for _, row in chunk.iterrows()}
+        weekly_discount = [float(by_week[week]["discount_pct"]) if week in by_week else 0.0 for week in weeks]
+        weekly_price = [float(by_week[week]["price"]) if week in by_week else float(chunk["base_price"].mean()) for week in weeks]
+        products.append(
+            PromoHistoricalProductRow(
+                product_name=str(product_name),
+                brand=int(brand),
+                ppg=str(ppg),
+                base_price=float(chunk["base_price"].mean()),
+                total_volume=float(chunk["volume"].sum()),
+                avg_discount_pct=float(chunk["discount_pct"].mean()),
+                weekly_discount_pct=weekly_discount,
+                weekly_price=weekly_price,
+            )
+        )
+    products.sort(key=lambda row: (row.base_price, row.product_name))
+    return PromoHistoricalResponse(
+        source_file=str(source_file.name),
+        selected_year=int(year),
+        selected_channel=str(channel),
+        available_years=years,
+        available_channels=channels,
+        weeks=weeks,
+        products=products,
+    )
+
+
+def get_promo_elasticity_insights(
+    selected_year: int | None = None,
+    selected_channel: str | None = None,
+) -> PromoElasticityInsightsResponse:
+    raw_df, source_file = _load_raw_promo_dataframe()
+    scope_keys = _get_result_input_scope_keys()
+    if scope_keys:
+        raw_df = raw_df[raw_df["product_key"].isin(scope_keys)].copy()
+    filtered, year, channel, years, channels = _apply_raw_filters(raw_df, selected_year, selected_channel)
+
+    products: list[PromoElasticityInsightRow] = []
+    for (product_name, brand, ppg), chunk in filtered.groupby(["product_name", "Brand", "PPG"], as_index=False):
+        prices = [float(value) for value in chunk["Price"].tolist()]
+        volumes = [float(value) for value in chunk["Volume"].tolist()]
+        base_price = float(chunk["BasePrice"].median())
+        base_rows = chunk[chunk["discount_pct"] <= 2.0]
+        base_volume = float(base_rows["Volume"].mean()) if not base_rows.empty else float(chunk["Volume"].mean())
+        base_elasticity = _regression_elasticity(prices, volumes)
+        e0, e10, e20, e30, e40 = _point_elasticity_series(
+            prices=prices,
+            volumes=volumes,
+            base_price=base_price,
+            base_volume=base_volume,
+            fallback=base_elasticity,
+        )
+
+        products.append(
+            PromoElasticityInsightRow(
+                product_name=str(product_name),
+                brand=int(brand),
+                ppg=str(ppg),
+                base_price=base_price,
+                base_elasticity=float(e0),
+                elasticity_10=float(e10),
+                elasticity_20=float(e20),
+                elasticity_30=float(e30),
+                elasticity_40=float(e40),
+            )
+        )
+
+    products.sort(key=lambda row: (row.base_price, row.product_name))
+    return PromoElasticityInsightsResponse(
+        source_file=str(source_file.name),
+        selected_year=int(year),
+        selected_channel=str(channel),
+        available_years=years,
+        available_channels=channels,
+        products=products,
     )

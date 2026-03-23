@@ -12,6 +12,7 @@ class PromoCalendarRequest(BaseModel):
     selected_month: Optional[str] = Field(default=None, description="Portfolio time key, e.g. 2024-W31")
     base_source_scenario_id: Optional[str] = None
     base_price_overrides: list["PromoBasePriceOverride"] = Field(default_factory=list)
+    prompt: Optional[str] = Field(default=None, description="Optional AI intent text for generation-bias control.")
     min_gross_margin_pct: float = Field(default=40.0, ge=20.0, le=60.0)
     min_promo_weeks: int = Field(default=4, ge=0, le=12)
     max_promo_weeks: int = Field(default=12, ge=1, le=12)
@@ -134,3 +135,45 @@ class PromoCalendarRecalculateResponse(BaseModel):
     profit_uplift_pct: float
     group_calendars: list[PromoWeeklyGroupCalendar]
     product_impacts: list[PromoProductImpact]
+
+
+class PromoHistoricalProductRow(BaseModel):
+    product_name: str
+    brand: int
+    ppg: str
+    base_price: float
+    total_volume: float
+    avg_discount_pct: float
+    weekly_discount_pct: list[float]
+    weekly_price: list[float]
+
+
+class PromoHistoricalResponse(BaseModel):
+    source_file: str
+    selected_year: int
+    selected_channel: str
+    available_years: list[int]
+    available_channels: list[str]
+    weeks: list[int]
+    products: list[PromoHistoricalProductRow]
+
+
+class PromoElasticityInsightRow(BaseModel):
+    product_name: str
+    brand: int
+    ppg: str
+    base_price: float
+    base_elasticity: float
+    elasticity_10: float
+    elasticity_20: float
+    elasticity_30: float
+    elasticity_40: float
+
+
+class PromoElasticityInsightsResponse(BaseModel):
+    source_file: str
+    selected_year: int
+    selected_channel: str
+    available_years: list[int]
+    available_channels: list[str]
+    products: list[PromoElasticityInsightRow]

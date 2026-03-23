@@ -1,11 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Bar, BarChart, CartesianGrid, Cell, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
-import { Download, Loader2, Play, RotateCcw } from 'lucide-react'
+import { Download, Loader2, Play, RotateCcw, Save, ChevronDown, Trash2 } from 'lucide-react'
 import AppLayout from '../components/layout/AppLayout'
 import { recalculatePromoCalendar, runPromoCalendarJob } from '../services/promoCalendarApi'
 
 const PAGE_SIZE = 5
 const PROMO_LEVEL_OPTIONS = [0, 10, 20, 30, 40]
+const PROMO_PAGE_CACHE_KEY = 'promo_calendar_page_state_v2'
+const PROMO_SAVED_CALENDARS_KEY = 'promo_saved_calendars_v1'
+const PROMO_SAVED_CALENDARS_MAX = 80
+let PROMO_PAGE_MEMORY_CACHE = null
 
 const formatPct = (value) => `${value >= 0 ? '+' : ''}${value.toFixed(1)}%`
 const formatInr = (value) => `INR ${new Intl.NumberFormat('en-IN', { maximumFractionDigits: 0 }).format(Math.round(Number(value) || 0))}`
@@ -19,6 +23,67 @@ const resolveErrorMessage = (errorValue) => {
   } catch {
     return 'Failed to run promo optimization.'
   }
+}
+
+const downloadFile = (content, fileName, mimeType = 'text/csv;charset=utf-8;') => {
+  const blob = new Blob([content], { type: mimeType })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = fileName
+  document.body.appendChild(anchor)
+  anchor.click()
+  document.body.removeChild(anchor)
+  URL.revokeObjectURL(url)
+}
+
+const escapeCsv = (value) => `"${String(value ?? '').replaceAll('"', '""')}"`
+
+const buildCalendarCsv = (entry) => {
+  const lines = []
+  lines.push(`Saved At,${escapeCsv(entry.savedAt)}`)
+  lines.push(`Scenario,${escapeCsv(entry.scenarioName)}`)
+  lines.push(`Scenario ID,${escapeCsv(entry.scenarioId)}`)
+  lines.push(`Selected Month,${escapeCsv(entry.selectedMonth ?? '')}`)
+  lines.push(`Edited,${escapeCsv(entry.edited ? 'Yes' : 'No')}`)
+  lines.push('')
+  lines.push('Totals')
+  lines.push('Metric,Base,Selected,Change %')
+  const safePct = (next, base) => {
+    const b = Number(base) || 0
+    if (Math.abs(b) <= 1e-9) return 0
+    return ((Number(next) - b) / b) * 100
+  }
+  lines.push(`Volume,${Number(entry.baseTotals?.total_volume ?? 0).toFixed(3)},${Number(entry.selectedTotals?.total_volume ?? 0).toFixed(3)},${safePct(entry.selectedTotals?.total_volume ?? 0, entry.baseTotals?.total_volume ?? 0).toFixed(3)}`)
+  lines.push(`Revenue,${Number(entry.baseTotals?.total_revenue ?? 0).toFixed(3)},${Number(entry.selectedTotals?.total_revenue ?? 0).toFixed(3)},${safePct(entry.selectedTotals?.total_revenue ?? 0, entry.baseTotals?.total_revenue ?? 0).toFixed(3)}`)
+  lines.push(`Profit,${Number(entry.baseTotals?.total_profit ?? 0).toFixed(3)},${Number(entry.selectedTotals?.total_profit ?? 0).toFixed(3)},${safePct(entry.selectedTotals?.total_profit ?? 0, entry.baseTotals?.total_profit ?? 0).toFixed(3)}`)
+  lines.push('')
+  lines.push('Weekly Promo Calendar')
+  const weeks = Array.from({ length: 27 }).map((_, idx) => `W${idx + 1}`)
+  lines.push(['Price Point Group', ...weeks].join(','))
+  ;(entry.groupCalendars ?? []).forEach((group) => {
+    const discounts = Array.from({ length: 27 }).map((_, idx) => Number(group?.weekly_discounts?.[idx] ?? 0))
+    lines.push([escapeCsv(group.group_name), ...discounts.map((d) => d.toFixed(0))].join(','))
+  })
+  lines.push('')
+  lines.push('Product Impact')
+  lines.push(['Product', 'Base Price', 'Current Volume', 'New Volume', 'Volume Change %', 'Current Revenue', 'New Revenue', 'Revenue Change %', 'Current Profit', 'New Profit', 'Profit Change %'].join(','))
+  ;(entry.productImpacts ?? []).forEach((row) => {
+    lines.push([
+      escapeCsv(row.product_name),
+      Number(row.base_price ?? 0).toFixed(3),
+      Number(row.current_volume ?? 0).toFixed(3),
+      Number(row.new_volume ?? 0).toFixed(3),
+      (Number(row.volume_change_pct ?? 0) * 100).toFixed(3),
+      Number(row.current_revenue ?? 0).toFixed(3),
+      Number(row.new_revenue ?? 0).toFixed(3),
+      (Number(row.revenue_change_pct ?? 0) * 100).toFixed(3),
+      Number(row.current_profit ?? 0).toFixed(3),
+      Number(row.new_profit ?? 0).toFixed(3),
+      (Number(row.profit_change_pct ?? 0) * 100).toFixed(3),
+    ].join(','))
+  })
+  return lines.join('\n')
 }
 
 const downloadCsv = (rows) => {
@@ -84,9 +149,14 @@ const nextPromoLevel = (currentLevel, reverse = false) => {
 
 const PromoCalendarPage = ({ layoutProps = {} }) => {
   const basePriceOverrides = []
+  const hasHydratedCacheRef = useRef(false)
+  const skipResetFromCacheRef = useRef(false)
+  const cachedScenarioIdRef = useRef(null)
+  const [isCacheHydrated, setIsCacheHydrated] = useState(false)
 
   const [controls, setControls] = useState({
     selectedMonth: null,
+    prompt: '',
     minGrossMarginPct: 40,
     minPromoWeeks: 4,
     maxPromoWeeks: 12,
@@ -111,7 +181,172 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
   const [promoApplyWeekFrom, setPromoApplyWeekFrom] = useState(16)
   const [promoApplyWeekTo, setPromoApplyWeekTo] = useState(27)
   const [promoApplyLevel, setPromoApplyLevel] = useState(10)
+  const [savedCalendars, setSavedCalendars] = useState([])
+  const [showSavedMenu, setShowSavedMenu] = useState(false)
+  const [saveToast, setSaveToast] = useState('')
+  const savedMenuRef = useRef(null)
   const recalcDebounceRef = useRef(null)
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      let parsed = null
+      if (PROMO_PAGE_MEMORY_CACHE && typeof PROMO_PAGE_MEMORY_CACHE === 'object') {
+        parsed = PROMO_PAGE_MEMORY_CACHE
+      } else {
+        const raw = localStorage.getItem(PROMO_PAGE_CACHE_KEY) ?? sessionStorage.getItem(PROMO_PAGE_CACHE_KEY)
+        if (raw) {
+          parsed = JSON.parse(raw)
+        }
+      }
+      if (!parsed) {
+        hasHydratedCacheRef.current = true
+        setIsCacheHydrated(true)
+        return
+      }
+      if (!parsed || typeof parsed !== 'object') {
+        hasHydratedCacheRef.current = true
+        setIsCacheHydrated(true)
+        return
+      }
+      if (parsed.controls && typeof parsed.controls === 'object') {
+        setControls((prev) => ({ ...prev, ...parsed.controls }))
+      }
+      if (parsed.result && typeof parsed.result === 'object') {
+        setResult(parsed.result)
+      }
+      if (typeof parsed.selectedScenarioId === 'string') {
+        setSelectedScenarioId(parsed.selectedScenarioId)
+        cachedScenarioIdRef.current = parsed.selectedScenarioId
+      }
+      if (parsed.sortBy === 'revenue' || parsed.sortBy === 'profit' || parsed.sortBy === 'volume') {
+        setSortBy(parsed.sortBy)
+      }
+      if (Number.isFinite(parsed.page) && parsed.page >= 0) {
+        setPage(parsed.page)
+      }
+      if (typeof parsed.showAllScenarios === 'boolean') {
+        setShowAllScenarios(parsed.showAllScenarios)
+      }
+      if (typeof parsed.promoApplyTarget === 'string') {
+        setPromoApplyTarget(parsed.promoApplyTarget)
+      }
+      if (Number.isFinite(parsed.promoApplyWeekFrom)) {
+        setPromoApplyWeekFrom(parsed.promoApplyWeekFrom)
+      }
+      if (Number.isFinite(parsed.promoApplyWeekTo)) {
+        setPromoApplyWeekTo(parsed.promoApplyWeekTo)
+      }
+      if (Number.isFinite(parsed.promoApplyLevel)) {
+        setPromoApplyLevel(parsed.promoApplyLevel)
+      }
+      if (Array.isArray(parsed.editedGroupCalendars)) {
+        setEditedGroupCalendars(parsed.editedGroupCalendars)
+      }
+      if (parsed.manualRecalc && typeof parsed.manualRecalc === 'object') {
+        setManualRecalc(parsed.manualRecalc)
+      }
+      if ((Array.isArray(parsed.editedGroupCalendars) && parsed.editedGroupCalendars.length > 0) || parsed.manualRecalc) {
+        skipResetFromCacheRef.current = true
+      }
+    } catch {
+      // ignore invalid cache
+    } finally {
+      hasHydratedCacheRef.current = true
+      setIsCacheHydrated(true)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      const raw = localStorage.getItem(PROMO_SAVED_CALENDARS_KEY)
+      if (!raw) return
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed)) {
+        setSavedCalendars(parsed)
+      }
+    } catch {
+      // ignore bad saved calendar cache
+    }
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      localStorage.setItem(PROMO_SAVED_CALENDARS_KEY, JSON.stringify(savedCalendars))
+    } catch {
+      // ignore quota
+    }
+  }, [savedCalendars])
+
+  useEffect(() => {
+    if (!saveToast) return
+    const timer = setTimeout(() => setSaveToast(''), 2200)
+    return () => clearTimeout(timer)
+  }, [saveToast])
+
+  useEffect(() => {
+    const onClick = (event) => {
+      if (!savedMenuRef.current) return
+      if (!savedMenuRef.current.contains(event.target)) {
+        setShowSavedMenu(false)
+      }
+    }
+    document.addEventListener('mousedown', onClick)
+    return () => document.removeEventListener('mousedown', onClick)
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    if (!hasHydratedCacheRef.current || !isCacheHydrated) return
+    try {
+      const payload = {
+        controls,
+        result,
+        selectedScenarioId,
+        sortBy,
+        page,
+        showAllScenarios,
+        promoApplyTarget,
+        promoApplyWeekFrom,
+        promoApplyWeekTo,
+        promoApplyLevel,
+        editedGroupCalendars,
+        manualRecalc,
+      }
+      PROMO_PAGE_MEMORY_CACHE = payload
+      try {
+        localStorage.setItem(PROMO_PAGE_CACHE_KEY, JSON.stringify(payload))
+        sessionStorage.setItem(PROMO_PAGE_CACHE_KEY, JSON.stringify(payload))
+      } catch {
+        const litePayload = {
+          ...payload,
+          result: null,
+          editedGroupCalendars: [],
+          manualRecalc: null,
+        }
+        localStorage.setItem(PROMO_PAGE_CACHE_KEY, JSON.stringify(litePayload))
+        sessionStorage.setItem(PROMO_PAGE_CACHE_KEY, JSON.stringify(litePayload))
+      }
+    } catch {
+      // ignore quota or serialization failures
+    }
+  }, [
+    controls,
+    isCacheHydrated,
+    page,
+    promoApplyLevel,
+    promoApplyTarget,
+    promoApplyWeekFrom,
+    promoApplyWeekTo,
+    result,
+    selectedScenarioId,
+    showAllScenarios,
+    sortBy,
+    editedGroupCalendars,
+    manualRecalc,
+  ])
 
   const runOptimization = async () => {
     setIsRunning(true)
@@ -120,6 +355,7 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
       const payload = {
         selected_month: controls.selectedMonth,
         base_price_overrides: basePriceOverrides,
+        prompt: String(controls.prompt ?? '').trim() || null,
         min_gross_margin_pct: Number(controls.minGrossMarginPct),
         min_promo_weeks: Number(controls.minPromoWeeks),
         max_promo_weeks: Number(controls.maxPromoWeeks),
@@ -223,6 +459,14 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
   }, [page, pageCount])
 
   useEffect(() => {
+    if (
+      skipResetFromCacheRef.current &&
+      cachedScenarioIdRef.current &&
+      selectedSummary?.scenario_id === cachedScenarioIdRef.current
+    ) {
+      skipResetFromCacheRef.current = false
+      return
+    }
     const baseCalendars = selectedDetail?.group_calendars ?? []
     setEditedGroupCalendars(baseCalendars.map((group) => ({ ...group, weekly_discounts: [...(group.weekly_discounts ?? [])] })))
     setManualRecalc(null)
@@ -378,7 +622,8 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
       money: true,
     },
     {
-      label: 'Realized Revenue',
+      label: 'Net Revenue',
+      // Net Revenue = discounted selling price x quantity (from backend total_revenue).
       pct: calcPct(netRevenueNext, netRevenueBase, false),
       base: netRevenueBase,
       next: netRevenueNext,
@@ -393,9 +638,141 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
     },
   ]
 
+  const saveCurrentCalendar = () => {
+    if (!result || !selectedSummary) return
+    const entry = {
+      id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      savedAt: new Date().toISOString(),
+      selectedMonth: result?.selected_month ?? controls.selectedMonth ?? '',
+      scenarioId: selectedSummary.scenario_id,
+      scenarioName: selectedSummary.scenario_name + (manualRecalc ? ' (Edited)' : ''),
+      edited: Boolean(manualRecalc),
+      baseTotals: baseTotals ?? null,
+      selectedTotals: selectedTotals ?? null,
+      groupCalendars: activeGroupCalendars ?? [],
+      productImpacts: activeProductImpacts ?? [],
+    }
+    setSavedCalendars((prev) => [entry, ...prev].slice(0, PROMO_SAVED_CALENDARS_MAX))
+    setSaveToast('Calendar saved')
+  }
+
+  const downloadCurrentCalendar = () => {
+    if (!result || !selectedSummary) return
+    const entry = {
+      savedAt: new Date().toISOString(),
+      selectedMonth: result?.selected_month ?? controls.selectedMonth ?? '',
+      scenarioId: selectedSummary.scenario_id,
+      scenarioName: selectedSummary.scenario_name + (manualRecalc ? ' (Edited)' : ''),
+      edited: Boolean(manualRecalc),
+      baseTotals: baseTotals ?? null,
+      selectedTotals: selectedTotals ?? null,
+      groupCalendars: activeGroupCalendars ?? [],
+      productImpacts: activeProductImpacts ?? [],
+    }
+    const csv = buildCalendarCsv(entry)
+    downloadFile(csv, `promo_calendar_${(selectedSummary.scenario_name || 'scenario').replace(/[^a-z0-9]+/gi, '_').toLowerCase()}_${new Date().toISOString().slice(0, 10)}.csv`)
+  }
+
+  const downloadSavedCalendar = (entry) => {
+    const csv = buildCalendarCsv(entry)
+    downloadFile(csv, `promo_calendar_saved_${(entry?.scenarioName || 'scenario').replace(/[^a-z0-9]+/gi, '_').toLowerCase()}_${String(entry?.savedAt || '').slice(0, 10)}.csv`)
+  }
+
+  const downloadAllSavedCalendars = () => {
+    downloadFile(
+      JSON.stringify(savedCalendars, null, 2),
+      `promo_calendar_saved_bundle_${new Date().toISOString().slice(0, 10)}.json`,
+      'application/json;charset=utf-8;',
+    )
+  }
+
   return (
     <AppLayout {...layoutProps}>
       <div className="space-y-6">
+        <div className="sticky top-2 z-30 flex justify-end" ref={savedMenuRef}>
+          <div className="relative inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-2 py-1 shadow-sm">
+            <button
+              type="button"
+              onClick={saveCurrentCalendar}
+              disabled={!result || !selectedSummary}
+              className="inline-flex items-center gap-1 rounded-full bg-[#2563EB] px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
+            >
+              <Save className="h-3.5 w-3.5" />
+              Save Calendar
+            </button>
+            <button
+              type="button"
+              onClick={downloadCurrentCalendar}
+              disabled={!result || !selectedSummary}
+              className="inline-flex items-center gap-1 rounded-full border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-50"
+            >
+              <Download className="h-3.5 w-3.5" />
+              Download
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowSavedMenu((prev) => !prev)}
+              className="inline-flex items-center gap-1 rounded-full border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700"
+            >
+              Saved ({savedCalendars.length})
+              <ChevronDown className={`h-3.5 w-3.5 transition ${showSavedMenu ? 'rotate-180' : ''}`} />
+            </button>
+            {saveToast && (
+              <span className="rounded-full bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-700">{saveToast}</span>
+            )}
+
+            {showSavedMenu && (
+              <div className="absolute right-0 top-10 z-40 w-[360px] rounded-lg border border-slate-200 bg-white p-2 shadow-xl">
+                <div className="mb-2 flex items-center justify-between px-1">
+                  <p className="text-xs font-bold uppercase tracking-wide text-slate-600">Saved Calendars</p>
+                  <button
+                    type="button"
+                    onClick={downloadAllSavedCalendars}
+                    disabled={!savedCalendars.length}
+                    className="inline-flex items-center gap-1 rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-700 disabled:opacity-50"
+                  >
+                    <Download className="h-3 w-3" />
+                    Download All
+                  </button>
+                </div>
+                <div className="max-h-64 space-y-1 overflow-auto">
+                  {savedCalendars.length === 0 && (
+                    <div className="rounded-md border border-slate-200 bg-slate-50 px-2 py-2 text-xs font-medium text-slate-500">
+                      No saved calendars yet.
+                    </div>
+                  )}
+                  {savedCalendars.map((entry) => (
+                    <div key={entry.id} className="rounded-md border border-slate-200 px-2 py-2">
+                      <p className="truncate text-xs font-semibold text-slate-800">{entry.scenarioName}</p>
+                      <p className="mt-0.5 text-[11px] font-medium text-slate-500">
+                        {String(entry.savedAt).slice(0, 19).replace('T', ' ')}
+                      </p>
+                      <div className="mt-1.5 flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => downloadSavedCalendar(entry)}
+                          className="inline-flex items-center gap-1 rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-700"
+                        >
+                          <Download className="h-3 w-3" />
+                          Download
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSavedCalendars((prev) => prev.filter((x) => x.id !== entry.id))}
+                          className="inline-flex items-center gap-1 rounded border border-rose-300 px-2 py-1 text-[11px] font-semibold text-rose-700"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
         <div className="panel p-4">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div>
@@ -417,6 +794,7 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
                 onClick={() => {
                   setControls((prev) => ({
                     ...prev,
+                    prompt: '',
                     minGrossMarginPct: 40,
                     minPromoWeeks: 4,
                     maxPromoWeeks: 12,
@@ -444,6 +822,15 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
                 </span>
               </div>
             </div>
+            <label className="space-y-1 text-xs font-semibold uppercase tracking-wide text-slate-600 lg:col-span-4">
+              AI Intent
+              <textarea
+                value={controls.prompt}
+                onChange={(event) => setControls((prev) => ({ ...prev, prompt: event.target.value }))}
+                placeholder="Example: protect premium realization, push tactical volume in value price points, avoid broad aggressive step-ups."
+                className="min-h-[84px] w-full rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700"
+              />
+            </label>
             <label className="space-y-1 text-xs font-semibold uppercase tracking-wide text-slate-600">
               Minimum Gross Margin
               <input
@@ -478,10 +865,6 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
               />
             </label>
           </div>
-          <p className="mt-3 text-xs font-semibold text-slate-600">
-            Fixed generation buckets: Max Volume (500) + Max Revenue (500) + Max Profit (500).
-          </p>
-
           {isRunning && (
             <div className="mt-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-700">
               {progress?.stage || 'Running...'} {Number.isFinite(progress?.progress_pct) ? `(${progress.progress_pct}%)` : ''}

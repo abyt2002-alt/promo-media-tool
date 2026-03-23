@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 
 from backend.schemas.promo_calendar import (
+    PromoElasticityInsightsResponse,
     PromoCalendarJobCreateResponse,
     PromoCalendarJobResultResponse,
     PromoCalendarJobStatusResponse,
@@ -10,12 +11,38 @@ from backend.schemas.promo_calendar import (
     PromoCalendarRecalculateResponse,
     PromoCalendarRequest,
     PromoCalendarResponse,
+    PromoHistoricalResponse,
 )
 from backend.services.promo_calendar_jobs import create_promo_calendar_job, get_promo_calendar_job
-from backend.services.promo_calendar_service import optimize_promo_calendar, recalculate_promo_calendar
+from backend.services.promo_calendar_service import (
+    get_historical_promo_calendar,
+    get_promo_elasticity_insights,
+    optimize_promo_calendar,
+    recalculate_promo_calendar,
+)
 
 
 router = APIRouter(prefix="/api/promo-calendar", tags=["Promo Calendar"])
+
+
+@router.get("/historical", response_model=PromoHistoricalResponse)
+def historical_promo_calendar(year: int | None = None, channel: str | None = None) -> PromoHistoricalResponse:
+    try:
+        return get_historical_promo_calendar(selected_year=year, selected_channel=channel)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover - defensive
+        raise HTTPException(status_code=500, detail=f"Failed to load historical promo calendar: {exc}") from exc
+
+
+@router.get("/insights", response_model=PromoElasticityInsightsResponse)
+def promo_elasticity_insights(year: int | None = None, channel: str | None = None) -> PromoElasticityInsightsResponse:
+    try:
+        return get_promo_elasticity_insights(selected_year=year, selected_channel=channel)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover - defensive
+        raise HTTPException(status_code=500, detail=f"Failed to load promo insights: {exc}") from exc
 
 
 @router.post("/optimize", response_model=PromoCalendarResponse)
