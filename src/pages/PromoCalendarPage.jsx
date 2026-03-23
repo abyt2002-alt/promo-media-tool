@@ -65,9 +65,7 @@ const downloadCsv = (rows) => {
 const getPromoLevelPillClass = (level, weekIndex) => {
   const value = Number(level) || 0
   if (value === 0) {
-    return weekIndex < 15
-      ? 'border-slate-200 bg-slate-100 text-slate-500'
-      : 'border-slate-300 bg-white text-slate-500'
+    return 'border-slate-200 bg-slate-100 text-slate-500'
   }
   if (value === 10) return 'border-emerald-200 bg-emerald-50 text-emerald-700'
   if (value === 20) return 'border-sky-200 bg-sky-50 text-sky-700'
@@ -361,6 +359,8 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
   const grossRevenueNext = grossRevenueFromImpacts.next > 0 ? grossRevenueFromImpacts.next : Number(selectedTotals?.total_revenue ?? 0)
   const netRevenueBase = Number(baseTotals?.total_revenue ?? 0)
   const netRevenueNext = Number(selectedTotals?.total_revenue ?? 0)
+  const profitBase = Number(baseTotals?.total_profit ?? 0)
+  const profitNext = Number(selectedTotals?.total_profit ?? 0)
 
   const impactCards = [
     {
@@ -382,6 +382,13 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
       pct: calcPct(netRevenueNext, netRevenueBase, false),
       base: netRevenueBase,
       next: netRevenueNext,
+      money: true,
+    },
+    {
+      label: 'Profit',
+      pct: calcPct(profitNext, profitBase, true),
+      base: profitBase,
+      next: profitNext,
       money: true,
     },
   ]
@@ -652,7 +659,7 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
                   {manualEditError}
                 </div>
               )}
-              <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-3">
+              <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-4">
                 {impactCards.map((item) => (
                   <div key={item.label} className="rounded-lg border border-slate-200 bg-white px-4 py-3">
                     <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">{item.label}</p>
@@ -768,19 +775,25 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
               </div>
 
               <div className="mt-3 overflow-x-auto rounded-lg border border-slate-200">
-                <table className="min-w-[1300px] divide-y divide-slate-200 text-sm">
+                <table className="w-full table-fixed divide-y divide-slate-200 text-xs">
+                  <colgroup>
+                    <col style={{ width: '12%' }} />
+                    {Array.from({ length: 27 }).map((_, index) => (
+                      <col key={`col-${index}`} style={{ width: `${88 / 27}%` }} />
+                    ))}
+                  </colgroup>
                   <thead className="bg-slate-50">
                     <tr>
                       <th
                         rowSpan={2}
-                        className="sticky left-0 z-20 border-r border-slate-200 bg-slate-50 px-3 py-2 text-left text-xs font-bold uppercase tracking-wide text-slate-600"
+                        className="sticky left-0 z-20 border-r border-slate-200 bg-slate-50 px-2 py-1.5 text-left text-[10px] font-bold uppercase tracking-wide text-slate-600"
                       >
                         Price Point Group
                       </th>
-                      <th colSpan={15} className="border-r border-slate-200 px-2 py-1 text-center text-[11px] font-bold uppercase tracking-wide text-slate-500">
+                      <th colSpan={15} className="border-r border-slate-200 px-1 py-1 text-center text-[10px] font-bold uppercase tracking-wide text-slate-500">
                         Base Window (W1-W15)
                       </th>
-                      <th colSpan={12} className="px-2 py-1 text-center text-[11px] font-bold uppercase tracking-wide text-slate-500">
+                      <th colSpan={12} className="px-1 py-1 text-center text-[10px] font-bold uppercase tracking-wide text-slate-500">
                         Promo Window (W16-W27)
                       </th>
                     </tr>
@@ -788,7 +801,7 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
                       {Array.from({ length: 27 }).map((_, index) => (
                         <th
                           key={index}
-                          className={`px-2 py-2 text-center text-xs font-bold uppercase tracking-wide ${
+                          className={`px-1 py-1 text-center text-[10px] font-bold uppercase tracking-wide ${
                             index < 15 ? 'bg-slate-50 text-slate-500' : 'bg-blue-50 text-[#2563EB]'
                           }`}
                         >
@@ -800,20 +813,20 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
                   <tbody className="divide-y divide-slate-100 bg-white">
                     {activeGroupCalendars.map((group) => (
                       <tr key={group.group_id}>
-                        <td className="sticky left-0 z-10 border-r border-slate-100 bg-white px-3 py-2 align-top">
-                          <p className="text-sm font-bold text-slate-800">{group.group_name}</p>
-                          <p className="text-xs font-medium text-slate-500">{group.product_count} products</p>
+                        <td className="sticky left-0 z-10 border-r border-slate-100 bg-white px-2 py-1.5 align-top">
+                          <p className="text-sm font-bold leading-tight text-slate-800">{group.group_name}</p>
+                          <p className="text-[11px] font-medium text-slate-500">{group.product_count} products</p>
                         </td>
                         {group.weekly_discounts.map((discount, idx) => (
-                          <td key={`${group.group_id}-${idx}`} className={`px-2 py-2 text-center ${idx < 15 ? 'bg-slate-50/40' : 'bg-white'}`}>
+                          <td key={`${group.group_id}-${idx}`} className={`px-1 py-1 text-center ${idx < 15 ? 'bg-slate-50/40' : 'bg-white'}`}>
                             <button
                               type="button"
                               onClick={(event) => handlePromoCellClick(group.group_id, idx, discount, event)}
                               disabled={isRecalculating}
-                              className={`h-7 min-w-[54px] rounded border px-1 text-[11px] font-bold transition hover:brightness-95 disabled:opacity-60 ${getPromoLevelPillClass(discount, idx)}`}
+                              className={`h-6 w-full rounded border px-1 text-[10px] font-bold leading-none transition hover:brightness-95 disabled:opacity-60 ${getPromoLevelPillClass(discount, idx)}`}
                               title="Click to cycle promo level. Shift+Click reverse. Alt+Click reset."
                             >
-                              {Number(discount) === 0 ? '-' : `${Number(discount)}%`}
+                              {Number(discount) === 0 ? '-' : `${Number(discount)}`}
                             </button>
                           </td>
                         ))}

@@ -88,7 +88,8 @@ def _parse_excel_numeric(value: Any) -> float:
 
 def _load_local_base_ladder_overrides() -> tuple[list[dict[str, Any]], str | None]:
     cwd = Path.cwd()
-    search_dirs = [cwd]
+    result_dir = cwd / "result file"
+    search_dirs = [result_dir]
     files: list[Path] = []
     for directory in search_dirs:
         if not directory.exists():
@@ -111,65 +112,69 @@ def _load_local_base_ladder_overrides() -> tuple[list[dict[str, Any]], str | Non
     seen: set[str] = set()
     detected_month: str | None = None
 
-    worksheets = root.findall(".//ss:Worksheet", ns)
-    for worksheet in worksheets:
-        table = worksheet.find("ss:Table", ns)
-        if table is None:
-            continue
-        rows: list[list[str]] = []
-        for row in table.findall("ss:Row", ns):
-            values: list[str] = []
-            for cell in row.findall("ss:Cell", ns):
-                data = cell.find("ss:Data", ns)
-                values.append("" if data is None or data.text is None else str(data.text).strip())
-            rows.append(values)
-        if not rows:
-            continue
+    # Only first worksheet is used (if workbook has multiple sheets).
+    worksheet = root.find(".//ss:Worksheet", ns)
+    if worksheet is None:
+        return [], None
 
-        if detected_month is None:
-            for row in rows:
-                if len(row) >= 2 and str(row[0]).strip().lower() == "month":
-                    detected_month = str(row[1]).strip() or None
-                    break
+    table = worksheet.find("ss:Table", ns)
+    if table is None:
+        return [], None
 
-        header_index = -1
-        for idx, row in enumerate(rows):
-            first = str(row[0]).strip().lower() if row else ""
-            has_rec = any(str(cell).strip().lower() == "recommended price" for cell in row)
-            if first == "product" and has_rec:
-                header_index = idx
+    rows: list[list[str]] = []
+    for row in table.findall("ss:Row", ns):
+        values: list[str] = []
+        for cell in row.findall("ss:Cell", ns):
+            data = cell.find("ss:Data", ns)
+            values.append("" if data is None or data.text is None else str(data.text).strip())
+        rows.append(values)
+    if not rows:
+        return [], None
+
+    if detected_month is None:
+        for row in rows:
+            if len(row) >= 2 and str(row[0]).strip().lower() == "month":
+                detected_month = str(row[1]).strip() or None
                 break
-        if header_index < 0:
-            continue
 
-        header = [str(cell).strip().lower() for cell in rows[header_index]]
-        product_idx = header.index("product") if "product" in header else -1
-        rec_idx = header.index("recommended price") if "recommended price" in header else -1
-        base_idx = header.index("base price") if "base price" in header else -1
-        base_vol_idx = header.index("base volume") if "base volume" in header else -1
-        if product_idx < 0 or (rec_idx < 0 and base_idx < 0):
-            continue
+    header_index = -1
+    for idx, row in enumerate(rows):
+        first = str(row[0]).strip().lower() if row else ""
+        has_rec = any(str(cell).strip().lower() == "recommended price" for cell in row)
+        if first == "product" and has_rec:
+            header_index = idx
+            break
+    if header_index < 0:
+        return [], detected_month
 
-        for row in rows[header_index + 1 :]:
-            if not row or product_idx >= len(row):
-                continue
-            product_name = str(row[product_idx]).strip()
-            if not product_name:
-                continue
-            rec_val = _parse_excel_numeric(row[rec_idx] if rec_idx >= 0 and rec_idx < len(row) else None)
-            base_val = _parse_excel_numeric(row[base_idx] if base_idx >= 0 and base_idx < len(row) else None)
-            base_vol = _parse_excel_numeric(row[base_vol_idx] if base_vol_idx >= 0 and base_vol_idx < len(row) else None)
-            chosen = rec_val if math.isfinite(rec_val) and rec_val > 0 else base_val
-            if not math.isfinite(chosen) or chosen <= 0:
-                continue
-            key = _normalize_product_key(product_name)
-            if key in seen:
-                continue
-            seen.add(key)
-            item = {"product_name": product_name, "base_price": float(chosen)}
-            if math.isfinite(base_vol) and base_vol > 0:
-                item["base_volume"] = float(base_vol)
-            overrides.append(item)
+    header = [str(cell).strip().lower() for cell in rows[header_index]]
+    product_idx = header.index("product") if "product" in header else -1
+    rec_idx = header.index("recommended price") if "recommended price" in header else -1
+    base_idx = header.index("base price") if "base price" in header else -1
+    base_vol_idx = header.index("base volume") if "base volume" in header else -1
+    if product_idx < 0 or (rec_idx < 0 and base_idx < 0):
+        return [], detected_month
+
+    for row in rows[header_index + 1 :]:
+        if not row or product_idx >= len(row):
+            continue
+        product_name = str(row[product_idx]).strip()
+        if not product_name:
+            continue
+        rec_val = _parse_excel_numeric(row[rec_idx] if rec_idx >= 0 and rec_idx < len(row) else None)
+        base_val = _parse_excel_numeric(row[base_idx] if base_idx >= 0 and base_idx < len(row) else None)
+        base_vol = _parse_excel_numeric(row[base_vol_idx] if base_vol_idx >= 0 and base_vol_idx < len(row) else None)
+        chosen = rec_val if math.isfinite(rec_val) and rec_val > 0 else base_val
+        if not math.isfinite(chosen) or chosen <= 0:
+            continue
+        key = _normalize_product_key(product_name)
+        if key in seen:
+            continue
+        seen.add(key)
+        item = {"product_name": product_name, "base_price": float(chosen)}
+        if math.isfinite(base_vol) and base_vol > 0:
+            item["base_volume"] = float(base_vol)
+        overrides.append(item)
 
     return overrides, detected_month
 
