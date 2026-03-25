@@ -173,6 +173,8 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
   const [isRunning, setIsRunning] = useState(false)
   const [progress, setProgress] = useState({ progress_pct: 0, stage: '' })
   const [error, setError] = useState('')
+  const [simulateCollapsed, setSimulateCollapsed] = useState(false)
+  const [selectionCollapsed, setSelectionCollapsed] = useState(false)
   const [editedGroupCalendars, setEditedGroupCalendars] = useState([])
   const [manualRecalc, setManualRecalc] = useState(null)
   const [isRecalculating, setIsRecalculating] = useState(false)
@@ -184,6 +186,8 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
   const [savedCalendars, setSavedCalendars] = useState([])
   const [showSavedMenu, setShowSavedMenu] = useState(false)
   const [saveToast, setSaveToast] = useState('')
+  const [isSaveDialogOpen, setIsSaveDialogOpen] = useState(false)
+  const [saveDialogName, setSaveDialogName] = useState('')
   const savedMenuRef = useRef(null)
   const recalcDebounceRef = useRef(null)
 
@@ -411,6 +415,16 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
     ].filter(Boolean)
   }, [result])
 
+  const bestVolumeScenario = result?.best_markers?.best_volume_scenario_id
+    ? summaries.find((row) => row.scenario_id === result.best_markers.best_volume_scenario_id) ?? null
+    : null
+  const bestRevenueScenario = result?.best_markers?.best_revenue_scenario_id
+    ? summaries.find((row) => row.scenario_id === result.best_markers.best_revenue_scenario_id) ?? null
+    : null
+  const bestProfitScenario = result?.best_markers?.best_profit_scenario_id
+    ? summaries.find((row) => row.scenario_id === result.best_markers.best_profit_scenario_id) ?? null
+    : null
+
   const displaySummaries = useMemo(() => {
     if (!result) return []
     if (filtersApplied || showAllScenarios) return filteredSummaries
@@ -450,7 +464,7 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
     : (selectedDetail?.group_calendars ?? [])
   const activeProductImpacts = manualRecalc?.product_impacts ?? selectedDetail?.product_impacts ?? []
   const selectedTotals = manualRecalc?.totals ?? selectedDetail?.totals ?? result?.selected_totals
-  const baseTotals = result?.base_totals
+  const baseTotals = manualRecalc?.base_totals ?? result?.base_totals
 
   useEffect(() => {
     if (page >= pageCount) {
@@ -638,11 +652,12 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
     },
   ]
 
-  const saveCurrentCalendar = () => {
+  const saveCurrentCalendar = (calendarName) => {
     if (!result || !selectedSummary) return
     const entry = {
       id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       savedAt: new Date().toISOString(),
+      calendarName: calendarName ?? '',
       selectedMonth: result?.selected_month ?? controls.selectedMonth ?? '',
       scenarioId: selectedSummary.scenario_id,
       scenarioName: selectedSummary.scenario_name + (manualRecalc ? ' (Edited)' : ''),
@@ -654,6 +669,13 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
     }
     setSavedCalendars((prev) => [entry, ...prev].slice(0, PROMO_SAVED_CALENDARS_MAX))
     setSaveToast('Calendar saved')
+  }
+
+  const openSaveDialog = () => {
+    if (!result || !selectedSummary) return
+    const nextIndex = savedCalendars.length + 1
+    setSaveDialogName(`Promo calendar ${nextIndex}`)
+    setIsSaveDialogOpen(true)
   }
 
   const downloadCurrentCalendar = () => {
@@ -671,6 +693,34 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
     }
     const csv = buildCalendarCsv(entry)
     downloadFile(csv, `promo_calendar_${(selectedSummary.scenario_name || 'scenario').replace(/[^a-z0-9]+/gi, '_').toLowerCase()}_${new Date().toISOString().slice(0, 10)}.csv`)
+  }
+
+  const loadSavedCalendar = (entry) => {
+    if (!entry || !result) return
+    const scenarioId = entry.scenarioId
+    if (!scenarioId) return
+
+    // Prevent the selection-change effect from resetting our manual edits immediately.
+    skipResetFromCacheRef.current = true
+    cachedScenarioIdRef.current = scenarioId
+
+    setSelectedScenarioId(scenarioId)
+    setEditedGroupCalendars(entry.groupCalendars ?? [])
+
+    setManualRecalc({
+      totals: entry.selectedTotals ?? null,
+      product_impacts: entry.productImpacts ?? [],
+      base_totals: entry.baseTotals ?? null,
+    })
+
+    setManualEditError('')
+    setPromoApplyTarget('ALL')
+    setPromoApplyWeekFrom(16)
+    setPromoApplyWeekTo(27)
+    setPromoApplyLevel(10)
+    setIsRecalculating(false)
+    setError('')
+    setShowSavedMenu(false)
   }
 
   const downloadSavedCalendar = (entry) => {
@@ -691,15 +741,6 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
       <div className="space-y-6">
         <div className="sticky top-2 z-30 flex justify-end" ref={savedMenuRef}>
           <div className="relative inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-2 py-1 shadow-sm">
-            <button
-              type="button"
-              onClick={saveCurrentCalendar}
-              disabled={!result || !selectedSummary}
-              className="inline-flex items-center gap-1 rounded-full bg-[#2563EB] px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
-            >
-              <Save className="h-3.5 w-3.5" />
-              Save Calendar
-            </button>
             <button
               type="button"
               onClick={downloadCurrentCalendar}
@@ -742,15 +783,27 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
                     </div>
                   )}
                   {savedCalendars.map((entry) => (
-                    <div key={entry.id} className="rounded-md border border-slate-200 px-2 py-2">
-                      <p className="truncate text-xs font-semibold text-slate-800">{entry.scenarioName}</p>
+                    <div
+                      key={entry.id}
+                      className="cursor-pointer rounded-md border border-slate-200 px-2 py-2 hover:bg-slate-50"
+                      onClick={() => loadSavedCalendar(entry)}
+                      role="button"
+                      tabIndex={0}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') loadSavedCalendar(entry)
+                      }}
+                    >
+                      <p className="truncate text-xs font-semibold text-slate-800">{entry.calendarName ?? entry.scenarioName}</p>
                       <p className="mt-0.5 text-[11px] font-medium text-slate-500">
                         {String(entry.savedAt).slice(0, 19).replace('T', ' ')}
                       </p>
                       <div className="mt-1.5 flex items-center gap-1">
                         <button
                           type="button"
-                          onClick={() => downloadSavedCalendar(entry)}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            downloadSavedCalendar(entry)
+                          }}
                           className="inline-flex items-center gap-1 rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-700"
                         >
                           <Download className="h-3 w-3" />
@@ -758,7 +811,10 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
                         </button>
                         <button
                           type="button"
-                          onClick={() => setSavedCalendars((prev) => prev.filter((x) => x.id !== entry.id))}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            setSavedCalendars((prev) => prev.filter((x) => x.id !== entry.id))
+                          }}
                           className="inline-flex items-center gap-1 rounded border border-rose-300 px-2 py-1 text-[11px] font-semibold text-rose-700"
                         >
                           <Trash2 className="h-3 w-3" />
@@ -773,74 +829,96 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
           </div>
         </div>
 
-        <div className="panel p-4">
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div>
-              <h2 className="text-xl font-bold text-slate-800">Promo Calendar Constraints</h2>
-              <p className="mt-1 text-xs font-medium text-slate-600">Generate weekly promo scenarios for W1-W27 (promo allowed only in W16-W27).</p>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={runOptimization}
-                disabled={isRunning}
-                className="inline-flex items-center gap-2 rounded-md bg-[#2563EB] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
-              >
-                {isRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-                Run Optimization
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setControls((prev) => ({
-                    ...prev,
-                    prompt: '',
-                    minGrossMarginPct: 40,
-                    minPromoWeeks: 4,
-                    maxPromoWeeks: 12,
-                    scenarioCount: 1500,
-                    minVolumeUpliftPct: '',
-                    minRevenueUpliftPct: '',
-                    maxProfitDecreasePct: '',
-                  }))
-                  setError('')
-                }}
-                className="inline-flex items-center gap-2 rounded-md border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700"
-              >
-                <RotateCcw className="h-4 w-4" />
-                Reset
-              </button>
-            </div>
-          </div>
+        {isSaveDialogOpen && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/35 px-4"
+            onClick={() => setIsSaveDialogOpen(false)}
+          >
+            <div
+              className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-5 shadow-2xl"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <h4 className="text-lg font-bold text-slate-800">Save Calendar</h4>
+              <p className="mt-1 text-sm font-medium text-slate-600">Name your saved scenario.</p>
 
-          <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-4">
-            <div className="space-y-1 lg:col-span-4">
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">Base Ladder Source</p>
-              <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2">
-                <span className="text-xs font-medium text-slate-600">
-                  Latest saved base ladder scenario file
-                </span>
+              <label className="mt-4 block text-xs font-semibold uppercase tracking-wide text-slate-600">
+                Calendar name
+                <input
+                  autoFocus
+                  type="text"
+                  value={saveDialogName}
+                  onChange={(event) => setSaveDialogName(event.target.value)}
+                  className="mt-2 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700"
+                  placeholder="Promo calendar 1"
+                />
+              </label>
+
+              <div className="mt-5 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  className="rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                  onClick={() => setIsSaveDialogOpen(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="rounded-md bg-[#2563EB] px-3 py-2 text-sm font-semibold text-white hover:brightness-95"
+                  onClick={() => {
+                    saveCurrentCalendar(saveDialogName)
+                    setIsSaveDialogOpen(false)
+                  }}
+                  disabled={!saveDialogName.trim()}
+                >
+                  Save
+                </button>
               </div>
             </div>
+          </div>
+        )}
+
+        <div className="panel p-4">
+          <button
+            type="button"
+            onClick={() => setSimulateCollapsed((prev) => !prev)}
+            className="flex w-full flex-wrap items-center justify-between gap-4 border-b border-slate-200 pb-3 text-left"
+          >
+            <div>
+              <h2 className="text-lg font-bold text-slate-800">Simulate promo scenarios with TrinityAI</h2>
+            </div>
+            <ChevronDown
+              className={`h-4 w-4 text-slate-500 transition-transform ${simulateCollapsed ? '-rotate-90' : 'rotate-0'}`}
+            />
+          </button>
+
+          {!simulateCollapsed && (
+          <>
+          <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-4">
+            <div className="lg:col-span-4">
+              <h3 className="text-base font-bold text-slate-800">Set constraints</h3>
+            </div>
             <label className="space-y-1 text-xs font-semibold uppercase tracking-wide text-slate-600 lg:col-span-4">
-              AI Intent
+              WHAT IS THE BUSINESS OUTCOME YOU WANT TO ACHIEVE?
               <textarea
                 value={controls.prompt}
                 onChange={(event) => setControls((prev) => ({ ...prev, prompt: event.target.value }))}
-                placeholder="Example: protect premium realization, push tactical volume in value price points, avoid broad aggressive step-ups."
-                className="min-h-[84px] w-full rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700"
+                placeholder="I want to maximize my revenue..."
+                className="min-h-[88px] w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700"
               />
             </label>
             <label className="space-y-1 text-xs font-semibold uppercase tracking-wide text-slate-600">
-              Minimum Gross Margin
-              <input
-                type="number"
-                value={controls.minGrossMarginPct}
-                min={20}
-                max={60}
-                onChange={(event) => setControls((prev) => ({ ...prev, minGrossMarginPct: event.target.value }))}
-                className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700"
-              />
+              MINIMUM GROSS MARGIN %
+              <div className="relative">
+                <input
+                  type="number"
+                  value={controls.minGrossMarginPct}
+                  min={20}
+                  max={60}
+                  onChange={(event) => setControls((prev) => ({ ...prev, minGrossMarginPct: event.target.value }))}
+                  className="w-full rounded-md border border-slate-300 px-3 py-2 pr-8 text-sm font-medium text-slate-700"
+                />
+                <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs font-semibold text-slate-500">%</span>
+              </div>
             </label>
             <label className="space-y-1 text-xs font-semibold uppercase tracking-wide text-slate-600">
               Min Promo Weeks
@@ -865,162 +943,238 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
               />
             </label>
           </div>
+          <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <button
+              type="button"
+              onClick={runOptimization}
+              disabled={isRunning}
+              className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-[#2563EB] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+            >
+              {isRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+              Run
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setControls((prev) => ({
+                  ...prev,
+                  prompt: '',
+                  minGrossMarginPct: 40,
+                  minPromoWeeks: 4,
+                  maxPromoWeeks: 12,
+                  scenarioCount: 1500,
+                  minVolumeUpliftPct: '',
+                  minRevenueUpliftPct: '',
+                  maxProfitDecreasePct: '',
+                }))
+                setError('')
+              }}
+              className="inline-flex w-full items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700"
+            >
+              <RotateCcw className="h-4 w-4" />
+              Reset
+            </button>
+          </div>
           {isRunning && (
             <div className="mt-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-700">
               {progress?.stage || 'Running...'} {Number.isFinite(progress?.progress_pct) ? `(${progress.progress_pct}%)` : ''}
             </div>
           )}
           {error && <div className="mt-3 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700">{error}</div>}
+          </>
+          )}
         </div>
 
         {result && (
           <div className="panel p-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <h3 className="text-xl font-bold text-slate-800">Scenario Selection</h3>
-              <div className="flex items-center gap-2">
-                {!filtersApplied && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowAllScenarios((prev) => !prev)
+            <button
+              type="button"
+              onClick={() => setSelectionCollapsed((prev) => !prev)}
+              className="flex w-full flex-wrap items-start justify-between gap-3 text-left"
+            >
+              <div className="min-w-[280px]">
+                <h3 className="text-xl font-bold text-slate-800">Select scenarios for further analysis</h3>
+                <p className="mt-1 text-sm font-semibold text-slate-800">{summaries.length} scenarios generated!</p>
+                {bestVolumeScenario && bestRevenueScenario && bestProfitScenario ? (
+                  <p className="text-xs font-medium text-slate-600">
+                    Highest Volume: {formatPct(Number(bestVolumeScenario.volume_uplift_pct) * 100)} · Highest Revenue:{' '}
+                    {formatPct(Number(bestRevenueScenario.revenue_uplift_pct) * 100)} · Highest Gross Margin:{' '}
+                    {formatPct(Number(bestProfitScenario.profit_uplift_pct) * 100)}
+                  </p>
+                ) : (
+                  <p className="text-xs font-medium text-rose-700">No scenarios match current filters.</p>
+                )}
+              </div>
+              <ChevronDown
+                className={`mt-1 h-4 w-4 text-slate-500 transition-transform ${selectionCollapsed ? '-rotate-90' : 'rotate-0'}`}
+              />
+            </button>
+
+            {!selectionCollapsed && (
+              <>
+                <div className="flex items-center gap-2 mt-3">
+                  {!filtersApplied && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAllScenarios((prev) => !prev)
+                        setPage(0)
+                      }}
+                      className={`rounded-md border px-3 py-2 text-sm font-semibold ${
+                        showAllScenarios
+                          ? 'border-[#2563EB] bg-blue-50 text-[#2563EB]'
+                          : 'border-slate-300 text-slate-700'
+                      }`}
+                    >
+                      {showAllScenarios ? 'Show Anchor 3' : `Show All (${summaries.length})`}
+                    </button>
+                  )}
+                  <select
+                    value={sortBy}
+                    onChange={(event) => {
+                      setSortBy(event.target.value)
                       setPage(0)
                     }}
-                    className={`rounded-md border px-3 py-2 text-sm font-semibold ${
-                      showAllScenarios
-                        ? 'border-[#2563EB] bg-blue-50 text-[#2563EB]'
-                        : 'border-slate-300 text-slate-700'
-                    }`}
+                    className="rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700"
                   >
-                    {showAllScenarios ? 'Show Anchor 3' : `Show All (${summaries.length})`}
+                    <option value="revenue">Sort by Revenue %</option>
+                    <option value="profit">Sort by Profit %</option>
+                    <option value="volume">Sort by Volume %</option>
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => downloadCsv(displaySummaries)}
+                    className="inline-flex items-center gap-2 rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700"
+                  >
+                    <Download className="h-4 w-4" />
+                    Download CSV
                   </button>
-                )}
-                <select
-                  value={sortBy}
-                  onChange={(event) => {
-                    setSortBy(event.target.value)
-                    setPage(0)
-                  }}
-                  className="rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700"
-                >
-                  <option value="revenue">Sort by Revenue %</option>
-                  <option value="profit">Sort by Profit %</option>
-                  <option value="volume">Sort by Volume %</option>
-                </select>
-                <button
-                  type="button"
-                  onClick={() => downloadCsv(displaySummaries)}
-                  className="inline-flex items-center gap-2 rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700"
-                >
-                  <Download className="h-4 w-4" />
-                  Download CSV
-                </button>
-              </div>
-            </div>
+                </div>
 
-            <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-3">
-              <label className="text-xs font-semibold uppercase tracking-wide text-slate-600">
-                Min Volume % Increase
-                <input
-                  type="number"
-                  value={controls.minVolumeUpliftPct}
-                  onChange={(event) => setControls((prev) => ({ ...prev, minVolumeUpliftPct: event.target.value }))}
-                  className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700"
-                />
-              </label>
-              <label className="text-xs font-semibold uppercase tracking-wide text-slate-600">
-                Min Revenue % Increase
-                <input
-                  type="number"
-                  value={controls.minRevenueUpliftPct}
-                  onChange={(event) => setControls((prev) => ({ ...prev, minRevenueUpliftPct: event.target.value }))}
-                  className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700"
-                />
-              </label>
-              <label className="text-xs font-semibold uppercase tracking-wide text-slate-600">
-                Max Profit % Decrease
-                <input
-                  type="number"
-                  min={0}
-                  value={controls.maxProfitDecreasePct}
-                  onChange={(event) => setControls((prev) => ({ ...prev, maxProfitDecreasePct: event.target.value }))}
-                  className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700"
-                />
-              </label>
-            </div>
+                <div className="mt-3 text-xs font-semibold text-slate-600">
+                  {!filtersApplied && !showAllScenarios ? 'Anchor view (Max Volume / Max Revenue / Max Profit). ' : ''}
+                  Showing {Math.min(page * PAGE_SIZE + 1, displaySummaries.length)}-
+                  {Math.min((page + 1) * PAGE_SIZE, displaySummaries.length)} of {displaySummaries.length}
+                </div>
 
-            <div className="mt-3 text-xs font-semibold text-slate-600">
-              {!filtersApplied && !showAllScenarios ? 'Anchor view (Max Volume / Max Revenue / Max Profit). ' : ''}
-              Showing {Math.min(page * PAGE_SIZE + 1, displaySummaries.length)}-{Math.min((page + 1) * PAGE_SIZE, displaySummaries.length)} of {displaySummaries.length}
-            </div>
-            <div className="mt-2 flex flex-wrap gap-2">
-              {pagedSummaries.map((row) => (
-                <button
-                  key={row.scenario_id}
-                  type="button"
-                  onClick={() => setSelectedScenarioId(row.scenario_id)}
-                  className={`rounded-md border px-3 py-2 text-left text-xs font-semibold ${
-                    selectedId === row.scenario_id ? 'border-[#2563EB] bg-blue-50 text-[#2563EB]' : 'border-slate-300 bg-white text-slate-700'
-                  }`}
-                >
-                  {row.scenario_name}
-                </button>
-              ))}
-            </div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {pagedSummaries.map((row) => (
+                    <button
+                      key={row.scenario_id}
+                      type="button"
+                      onClick={() => setSelectedScenarioId(row.scenario_id)}
+                      className={`rounded-md border px-3 py-2 text-left text-xs font-semibold ${
+                        selectedId === row.scenario_id
+                          ? 'border-[#2563EB] bg-blue-50 text-[#2563EB]'
+                          : 'border-slate-300 bg-white text-slate-700'
+                      }`}
+                    >
+                      {row.scenario_name}
+                    </button>
+                  ))}
+                </div>
 
-            <div className="mt-4 h-[320px] w-full">
-              <ResponsiveContainer>
-                <BarChart
-                  data={pagedSummaries.map((row) => ({
-                    name: row.scenario_name,
-                    scenarioId: row.scenario_id,
-                    volumePct: Number(row.volume_uplift_pct) * 100,
-                    revenuePct: Number(row.revenue_uplift_pct) * 100,
-                    profitPct: Number(row.profit_uplift_pct) * 100,
-                  }))}
-                  margin={{ top: 16, right: 20, left: 8, bottom: 16 }}
-                >
-                  <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" />
-                  <XAxis dataKey="name" tick={{ fontSize: 11, fill: '#0F172A', fontWeight: 700 }} />
-                  <YAxis tickFormatter={(v) => `${v}%`} tick={{ fontSize: 11, fill: '#0F172A', fontWeight: 700 }} />
-                  <Tooltip formatter={(v) => `${Number(v).toFixed(2)}%`} />
-                  <Legend />
-                  <Bar dataKey="volumePct" name="Volume %" fill="#2563EB">
-                    {pagedSummaries.map((row) => (
-                      <Cell
-                        key={`v-${row.scenario_id}`}
-                        cursor="pointer"
-                        fill={selectedId === row.scenario_id ? '#1D4ED8' : '#2563EB'}
-                        onClick={() => setSelectedScenarioId(row.scenario_id)}
+                <div className="mt-4 rounded-lg border border-slate-200 bg-white p-3">
+                  <h4 className="text-base font-semibold text-[#0F172A]">View and compare scenarios</h4>
+                  <p className="mt-1 mb-2 text-[11px] font-medium text-slate-600">
+                    Scenarios selected to surface the highest positive volume %, revenue %, and gross margin % vs base (up to three distinct
+                    scenarios). Change filters to see more.
+                  </p>
+                  {displaySummaries?.[0]?.scenario_id ? (
+                    <p className="text-center text-[11px] font-semibold text-slate-600">Base Anchor {displaySummaries[0].scenario_id}</p>
+                  ) : null}
+
+                  <div className="mt-3 h-[320px] w-full">
+                    <ResponsiveContainer>
+                      <BarChart
+                        data={pagedSummaries.map((row) => ({
+                          name: row.scenario_name,
+                          scenarioId: row.scenario_id,
+                          volumePct: Number(row.volume_uplift_pct) * 100,
+                          revenuePct: Number(row.revenue_uplift_pct) * 100,
+                          profitPct: Number(row.profit_uplift_pct) * 100,
+                        }))}
+                        margin={{ top: 16, right: 20, left: 8, bottom: 16 }}
+                      >
+                        <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" />
+                        <XAxis dataKey="name" tick={{ fontSize: 11, fill: '#0F172A', fontWeight: 700 }} />
+                        <YAxis tickFormatter={(v) => `${v}%`} tick={{ fontSize: 11, fill: '#0F172A', fontWeight: 700 }} />
+                        <Tooltip formatter={(v) => `${Number(v).toFixed(2)}%`} />
+                        <Legend verticalAlign="bottom" align="center" wrapperStyle={{ fontSize: 11, fontWeight: 600 }} />
+                        <Bar dataKey="volumePct" name="Volume %" fill="#2563EB">
+                          {pagedSummaries.map((row) => (
+                            <Cell
+                              key={`v-${row.scenario_id}`}
+                              cursor="pointer"
+                              fill={selectedId === row.scenario_id ? '#1D4ED8' : '#2563EB'}
+                              onClick={() => setSelectedScenarioId(row.scenario_id)}
+                            />
+                          ))}
+                        </Bar>
+                        <Bar dataKey="revenuePct" name="Revenue %" fill="#16A34A" />
+                        <Bar dataKey="profitPct" name="Profit %" fill="#F97316" />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                <div className="mt-4 rounded-lg border border-slate-200 bg-white p-4">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">FILTER SCENARIOS</p>
+                  <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-3">
+                    <label className="text-xs font-semibold uppercase tracking-wide text-slate-600">
+                      Min Volume % Increase
+                      <input
+                        type="number"
+                        value={controls.minVolumeUpliftPct}
+                        onChange={(event) => setControls((prev) => ({ ...prev, minVolumeUpliftPct: event.target.value }))}
+                        className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700"
                       />
-                    ))}
-                  </Bar>
-                  <Bar dataKey="revenuePct" name="Revenue %" fill="#16A34A" />
-                  <Bar dataKey="profitPct" name="Profit %" fill="#F97316" />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
+                    </label>
+                    <label className="text-xs font-semibold uppercase tracking-wide text-slate-600">
+                      Min Revenue % Increase
+                      <input
+                        type="number"
+                        value={controls.minRevenueUpliftPct}
+                        onChange={(event) => setControls((prev) => ({ ...prev, minRevenueUpliftPct: event.target.value }))}
+                        className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700"
+                      />
+                    </label>
+                    <label className="text-xs font-semibold uppercase tracking-wide text-slate-600">
+                      Max Profit % Decrease
+                      <input
+                        type="number"
+                        min={0}
+                        value={controls.maxProfitDecreasePct}
+                        onChange={(event) => setControls((prev) => ({ ...prev, maxProfitDecreasePct: event.target.value }))}
+                        className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700"
+                      />
+                    </label>
+                  </div>
+                </div>
 
-            <div className="mt-2 flex items-center justify-end gap-2">
-              <button
-                type="button"
-                disabled={page === 0}
-                onClick={() => setPage((prev) => Math.max(0, prev - 1))}
-                className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-40"
-              >
-                Previous
-              </button>
-              <span className="text-xs font-semibold text-slate-600">
-                Page {Math.min(page + 1, pageCount)} / {pageCount}
-              </span>
-              <button
-                type="button"
-                disabled={page >= pageCount - 1}
-                onClick={() => setPage((prev) => Math.min(pageCount - 1, prev + 1))}
-                className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-40"
-              >
-                Next
-              </button>
-            </div>
+                <div className="mt-2 flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    disabled={page === 0}
+                    onClick={() => setPage((prev) => Math.max(0, prev - 1))}
+                    className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-40"
+                  >
+                    Previous
+                  </button>
+                  <span className="text-xs font-semibold text-slate-600">
+                    Page {Math.min(page + 1, pageCount)} / {pageCount}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={page >= pageCount - 1}
+                    onClick={() => setPage((prev) => Math.min(pageCount - 1, prev + 1))}
+                    className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-40"
+                  >
+                    Next
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         )}
 
@@ -1028,7 +1182,7 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
           <>
             <div className="panel sticky top-3 z-20 p-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <h3 className="text-xl font-bold text-slate-800">Total Impact (All Segments)</h3>
+                <h3 className="text-xl font-bold text-slate-800">Projected Business Impact</h3>
                 <div className="flex items-center gap-2">
                   <p className="text-sm font-semibold text-slate-600">
                     Selected Scenario: {selectedSummary.scenario_name}
@@ -1058,29 +1212,39 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
             <div className="panel p-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
-                  <h3 className="text-xl font-bold text-slate-800">Weekly Promo Calendar by Price Point</h3>
-                  <p className="mt-1 text-xs font-medium text-slate-600">Post-generation edit mode: click any week (W1-W27) to set No Promo / 10% / 20% / 30% / 40%.</p>
+                  <h3 className="text-xl font-bold text-slate-800">Edit Promo Calendar</h3>
+                  <p className="mt-1 text-xs font-medium text-slate-600">Click on a week (W1-W27) to set No Promo / 10% / 20% / 30% / 40%.</p>
                 </div>
-                <button
-                  type="button"
-                  onClick={resetCalendarEdits}
-                  className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700"
-                >
-                  Reset to Scenario
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={resetCalendarEdits}
+                    className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700"
+                  >
+                    Reset to scenario
+                  </button>
+                  <button
+                    type="button"
+                    onClick={openSaveDialog}
+                    className="inline-flex items-center gap-1 rounded-full bg-[#2563EB] px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
+                  >
+                    <Save className="h-3.5 w-3.5" />
+                    Save Calendar
+                  </button>
+                </div>
               </div>
 
               <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
-                <p className="text-xs font-bold uppercase tracking-wide text-slate-600">Promo Applier</p>
+                <p className="text-xs font-bold uppercase tracking-wide text-slate-600">Bulk editor</p>
                 <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-6">
                   <label className="text-xs font-semibold text-slate-600">
-                    Target
+                    SKU group
                     <select
                       value={promoApplyTarget}
                       onChange={(event) => setPromoApplyTarget(event.target.value)}
                       className="mt-1 h-8 w-full rounded border border-slate-300 bg-white px-2 text-xs font-semibold text-slate-700"
                     >
-                      <option value="ALL">All Groups</option>
+                      <option value="ALL">All</option>
                       {activeGroupCalendars.map((group) => (
                         <option key={group.group_id} value={group.group_id}>
                           {group.group_name}
@@ -1137,16 +1301,10 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
                       disabled={isRecalculating || !activeGroupCalendars.length}
                       className="h-8 w-full rounded border border-[#2563EB] bg-blue-50 px-3 text-xs font-bold text-[#2563EB] disabled:opacity-50"
                     >
-                      Apply Promo
+                      Apply
                     </button>
                   </div>
                 </div>
-              </div>
-
-              <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] font-semibold text-slate-600">
-                <span className="rounded border border-slate-300 bg-white px-2 py-1">Click: Next Level</span>
-                <span className="rounded border border-slate-300 bg-white px-2 py-1">Shift+Click: Previous</span>
-                <span className="rounded border border-slate-300 bg-white px-2 py-1">Alt/Option+Click: No Promo</span>
               </div>
 
               <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] font-semibold text-slate-600">
@@ -1171,10 +1329,10 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
                         rowSpan={2}
                         className="sticky left-0 z-20 border-r border-slate-200 bg-slate-50 px-2 py-1.5 text-left text-[10px] font-bold uppercase tracking-wide text-slate-600"
                       >
-                        Price Point Group
+                        SKU group
                       </th>
                       <th colSpan={15} className="border-r border-slate-200 px-1 py-1 text-center text-[10px] font-bold uppercase tracking-wide text-slate-500">
-                        Base Window (W1-W15)
+                        Base price (W1-W15)
                       </th>
                       <th colSpan={12} className="px-1 py-1 text-center text-[10px] font-bold uppercase tracking-wide text-slate-500">
                         Promo Window (W16-W27)

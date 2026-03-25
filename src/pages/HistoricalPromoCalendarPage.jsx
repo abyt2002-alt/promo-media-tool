@@ -135,6 +135,17 @@ const HistoricalPromoCalendarPage = ({ layoutProps = {} }) => {
       .sort((a, b) => b.weekDiscount - a.weekDiscount)
   }, [groupedRows, selectedCell])
 
+  useEffect(() => {
+    if (!selectedCell) return undefined
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        setSelectedCell(null)
+      }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [selectedCell])
+
   return (
     <AppLayout {...layoutProps}>
       <div className="space-y-6">
@@ -225,8 +236,14 @@ const HistoricalPromoCalendarPage = ({ layoutProps = {} }) => {
       </div>
 
       {selectedCell && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 p-4">
-          <div className="w-full max-w-4xl rounded-xl border border-slate-200 bg-white shadow-2xl">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 p-4"
+          onClick={() => setSelectedCell(null)}
+        >
+          <div
+            className="w-full max-w-4xl rounded-xl border border-slate-200 bg-white shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
             <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
               <div>
                 <h4 className="text-lg font-bold text-slate-800">
