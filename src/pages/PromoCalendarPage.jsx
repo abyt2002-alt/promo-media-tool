@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Bar, BarChart, CartesianGrid, Cell, LabelList, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
-import { Download, Loader2, Play, RotateCcw, Save, ChevronDown, Trash2 } from 'lucide-react'
+import { Download, Loader2, Play, RotateCcw, Save, ChevronDown, Trash2, Sparkles } from 'lucide-react'
 import AppLayout from '../components/layout/AppLayout'
 import { recalculatePromoCalendar, runPromoCalendarJob } from '../services/promoCalendarApi'
 
@@ -167,6 +167,15 @@ const nextPromoLevel = (currentLevel, reverse = false) => {
   return PROMO_LEVEL_OPTIONS[nextIdx]
 }
 
+const cloneGroupCalendars = (groups = []) =>
+  groups.map((group) => ({ ...group, weekly_discounts: [...(group.weekly_discounts ?? [])] }))
+
+const zeroTotals = {
+  total_volume: 0,
+  total_revenue: 0,
+  total_profit: 0,
+}
+
 const PromoCalendarPage = ({ layoutProps = {} }) => {
   const basePriceOverrides = []
   const hasHydratedCacheRef = useRef(false)
@@ -197,6 +206,13 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
   const [selectionCollapsed, setSelectionCollapsed] = useState(false)
   const [editedGroupCalendars, setEditedGroupCalendars] = useState([])
   const [manualRecalc, setManualRecalc] = useState(null)
+  const [defaultBaseGroupCalendars, setDefaultBaseGroupCalendars] = useState([])
+  const [defaultGroupCalendars, setDefaultGroupCalendars] = useState([])
+  const [defaultBaseTotals, setDefaultBaseTotals] = useState(null)
+  const [defaultBaseProductImpacts, setDefaultBaseProductImpacts] = useState([])
+  const [defaultRecalc, setDefaultRecalc] = useState(null)
+  const [defaultHasEdits, setDefaultHasEdits] = useState(false)
+  const [defaultInitError, setDefaultInitError] = useState('')
   const [isRecalculating, setIsRecalculating] = useState(false)
   const [manualEditError, setManualEditError] = useState('')
   const [promoApplyTarget, setPromoApplyTarget] = useState('ALL')
@@ -311,6 +327,41 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
   }, [saveToast])
 
   useEffect(() => {
+    if (result) return
+    if (defaultBaseGroupCalendars.length > 0) return
+    let cancelled = false
+
+    const initializeDefaultCalendar = async () => {
+      setDefaultInitError('')
+      try {
+        const response = await recalculatePromoCalendar({
+          selected_month: controls.selectedMonth,
+          base_price_overrides: basePriceOverrides,
+          min_promo_weeks: Number(controls.minPromoWeeks),
+          max_promo_weeks: Number(controls.maxPromoWeeks),
+          group_calendars: [],
+        })
+        if (cancelled) return
+        const baseGroups = cloneGroupCalendars(response?.group_calendars ?? [])
+        setDefaultBaseGroupCalendars(baseGroups)
+        setDefaultGroupCalendars(cloneGroupCalendars(baseGroups))
+        setDefaultBaseTotals(response?.totals ?? zeroTotals)
+        setDefaultBaseProductImpacts(response?.product_impacts ?? [])
+        setDefaultRecalc(null)
+        setDefaultHasEdits(false)
+      } catch (initError) {
+        if (cancelled) return
+        setDefaultInitError(resolveErrorMessage(initError))
+      }
+    }
+
+    initializeDefaultCalendar()
+    return () => {
+      cancelled = true
+    }
+  }, [controls.maxPromoWeeks, controls.minPromoWeeks, controls.selectedMonth, defaultBaseGroupCalendars.length, result])
+
+  useEffect(() => {
     const onClick = (event) => {
       if (!savedMenuRef.current) return
       if (!savedMenuRef.current.contains(event.target)) {
@@ -394,7 +445,7 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
         onProgress: (nextProgress) => setProgress(nextProgress),
       })
       setResult(nextResult)
-      setSelectedScenarioId(nextResult?.selected_scenario_id ?? null)
+      setSelectedScenarioId(null)
       setShowAllScenarios(false)
       setPage(0)
     } catch (runError) {
@@ -472,19 +523,25 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
   }, [displaySummaries, page])
 
   const pageCount = Math.max(1, Math.ceil(displaySummaries.length / PAGE_SIZE))
-  const selectedId = selectedScenarioId ?? pagedSummaries[0]?.scenario_id
-  const selectedSummary =
-    summaries.find((row) => row.scenario_id === selectedId) ??
-    displaySummaries[0] ??
-    null
+  const selectedId = selectedScenarioId ?? null
+  const selectedSummary = selectedId
+    ? (summaries.find((row) => row.scenario_id === selectedId) ?? null)
+    : null
   const selectedDetail = selectedSummary ? result?.scenario_details?.[selectedSummary.scenario_id] : null
+  const inScenarioMode = Boolean(result && selectedSummary)
 
-  const activeGroupCalendars = editedGroupCalendars.length
-    ? editedGroupCalendars
-    : (selectedDetail?.group_calendars ?? [])
-  const activeProductImpacts = manualRecalc?.product_impacts ?? selectedDetail?.product_impacts ?? []
-  const selectedTotals = manualRecalc?.totals ?? selectedDetail?.totals ?? result?.selected_totals
-  const baseTotals = manualRecalc?.base_totals ?? result?.base_totals
+  const activeGroupCalendars = inScenarioMode
+    ? (editedGroupCalendars.length ? editedGroupCalendars : (selectedDetail?.group_calendars ?? []))
+    : defaultGroupCalendars
+  const activeProductImpacts = inScenarioMode
+    ? (manualRecalc?.product_impacts ?? selectedDetail?.product_impacts ?? [])
+    : (defaultRecalc?.product_impacts ?? defaultBaseProductImpacts ?? [])
+  const selectedTotals = inScenarioMode
+    ? (manualRecalc?.totals ?? selectedDetail?.totals ?? result?.selected_totals ?? zeroTotals)
+    : (defaultHasEdits ? (defaultRecalc?.totals ?? zeroTotals) : zeroTotals)
+  const baseTotals = inScenarioMode
+    ? (manualRecalc?.base_totals ?? result?.base_totals ?? zeroTotals)
+    : (defaultHasEdits ? (defaultBaseTotals ?? zeroTotals) : zeroTotals)
 
   useEffect(() => {
     if (page >= pageCount) {
@@ -518,13 +575,22 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
     }
   }, [])
 
+  useEffect(() => {
+    if (!inScenarioMode) return
+    if (!defaultHasEdits) return
+    setDefaultGroupCalendars(cloneGroupCalendars(defaultBaseGroupCalendars))
+    setDefaultRecalc(null)
+    setDefaultHasEdits(false)
+    setDefaultInitError('')
+  }, [defaultBaseGroupCalendars, defaultHasEdits, inScenarioMode])
+
   const recomputeManualCalendar = async (nextCalendars) => {
-    if (!result) return
     setIsRecalculating(true)
     setManualEditError('')
+    setDefaultInitError('')
     try {
       const payload = {
-        selected_month: result?.selected_month ?? controls.selectedMonth,
+        selected_month: inScenarioMode ? (result?.selected_month ?? controls.selectedMonth) : controls.selectedMonth,
         base_price_overrides: basePriceOverrides,
         min_promo_weeks: Number(controls.minPromoWeeks),
         max_promo_weeks: Number(controls.maxPromoWeeks),
@@ -534,7 +600,12 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
         })),
       }
       const recalculated = await recalculatePromoCalendar(payload)
-      setManualRecalc(recalculated)
+      if (inScenarioMode) {
+        setManualRecalc(recalculated)
+      } else {
+        setDefaultRecalc(recalculated)
+        setDefaultHasEdits(true)
+      }
     } catch (recalcError) {
       setManualEditError(resolveErrorMessage(recalcError))
     } finally {
@@ -566,7 +637,11 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
       nextWeekly[weekIndex] = level
       return { ...group, weekly_discounts: nextWeekly }
     })
-    setEditedGroupCalendars(nextCalendars)
+    if (inScenarioMode) {
+      setEditedGroupCalendars(nextCalendars)
+    } else {
+      setDefaultGroupCalendars(nextCalendars)
+    }
     queueRecomputeManualCalendar(nextCalendars)
   }
 
@@ -584,10 +659,17 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
   }
 
   const resetCalendarEdits = () => {
-    const baseCalendars = selectedDetail?.group_calendars ?? []
-    const copied = baseCalendars.map((group) => ({ ...group, weekly_discounts: [...(group.weekly_discounts ?? [])] }))
-    setEditedGroupCalendars(copied)
-    setManualRecalc(null)
+    if (inScenarioMode) {
+      const baseCalendars = selectedDetail?.group_calendars ?? []
+      const copied = cloneGroupCalendars(baseCalendars)
+      setEditedGroupCalendars(copied)
+      setManualRecalc(null)
+    } else {
+      const copied = cloneGroupCalendars(defaultBaseGroupCalendars)
+      setDefaultGroupCalendars(copied)
+      setDefaultRecalc(null)
+      setDefaultHasEdits(false)
+    }
     setManualEditError('')
   }
 
@@ -612,7 +694,11 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
       return { ...group, weekly_discounts: nextWeekly }
     })
 
-    setEditedGroupCalendars(nextCalendars)
+    if (inScenarioMode) {
+      setEditedGroupCalendars(nextCalendars)
+    } else {
+      setDefaultGroupCalendars(nextCalendars)
+    }
     await recomputeManualCalendar(nextCalendars)
   }
 
@@ -673,15 +759,21 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
   ]
 
   const saveCurrentCalendar = (calendarName) => {
-    if (!result || !selectedSummary) return
+    if (!inScenarioMode && !defaultGroupCalendars.length) return
+    const scenarioId = inScenarioMode ? selectedSummary?.scenario_id : 'default'
+    if (!scenarioId) return
+    const scenarioLabel = inScenarioMode
+      ? `${selectedSummary?.scenario_name ?? 'Scenario'}${manualRecalc ? ' (Edited)' : ''}`
+      : `Default Calendar${defaultHasEdits ? ' (Edited)' : ''}`
     const entry = {
       id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       savedAt: new Date().toISOString(),
       calendarName: calendarName ?? '',
-      selectedMonth: result?.selected_month ?? controls.selectedMonth ?? '',
-      scenarioId: selectedSummary.scenario_id,
-      scenarioName: selectedSummary.scenario_name + (manualRecalc ? ' (Edited)' : ''),
-      edited: Boolean(manualRecalc),
+      selectedMonth: (inScenarioMode ? result?.selected_month : controls.selectedMonth) ?? '',
+      scenarioId,
+      scenarioName: scenarioLabel,
+      mode: inScenarioMode ? 'scenario' : 'default',
+      edited: inScenarioMode ? Boolean(manualRecalc) : Boolean(defaultHasEdits),
       baseTotals: baseTotals ?? null,
       selectedTotals: selectedTotals ?? null,
       groupCalendars: activeGroupCalendars ?? [],
@@ -692,7 +784,7 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
   }
 
   const openSaveDialog = () => {
-    if (!result || !selectedSummary) return
+    if (!inScenarioMode && !defaultGroupCalendars.length) return
     const nextIndex = savedCalendars.length + 1
     setSaveDialogName(`Promo calendar ${nextIndex}`)
     setIsSaveDialogOpen(true)
@@ -716,7 +808,28 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
   }
 
   const loadSavedCalendar = (entry) => {
-    if (!entry || !result) return
+    if (!entry) return
+    const isDefaultEntry = entry.mode === 'default' || entry.scenarioId === 'default'
+    if (isDefaultEntry) {
+      const groups = cloneGroupCalendars(entry.groupCalendars ?? [])
+      setDefaultBaseGroupCalendars(groups)
+      setDefaultGroupCalendars(groups)
+      setDefaultBaseTotals(entry.baseTotals ?? zeroTotals)
+      setDefaultBaseProductImpacts(entry.productImpacts ?? [])
+      setDefaultRecalc({
+        totals: entry.selectedTotals ?? zeroTotals,
+        product_impacts: entry.productImpacts ?? [],
+      })
+      setDefaultHasEdits(true)
+      setSelectedScenarioId(null)
+      setEditedGroupCalendars([])
+      setManualRecalc(null)
+      setManualEditError('')
+      setError('')
+      setShowSavedMenu(false)
+      return
+    }
+    if (!result) return
     const scenarioId = entry.scenarioId
     if (!scenarioId) return
 
@@ -904,7 +1017,15 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
             className="flex w-full flex-wrap items-center justify-between gap-4 border-b border-slate-200 pb-3 text-left"
           >
             <div>
-              <h2 className="text-lg font-bold text-slate-800">Simulate promo scenarios with TrinityAI</h2>
+              <h2 className="text-lg font-bold text-slate-800">
+                Simulate promo scenarios with{' '}
+                <span className="relative inline-flex items-center font-extrabold">
+                  <span className="text-[#0F172A]">Trinity</span>
+                  <span className="ml-1 text-[#4F46E5]">AI</span>
+                  <Sparkles className="pointer-events-none absolute -right-4 -top-2 h-3.5 w-3.5 text-[#6366F1]" />
+                  <Sparkles className="pointer-events-none absolute -right-3 top-2 h-2.5 w-2.5 text-[#F59E0B]" />
+                </span>
+              </h2>
             </div>
             <ChevronDown
               className={`h-4 w-4 text-slate-500 transition-transform ${simulateCollapsed ? '-rotate-90' : 'rotate-0'}`}
@@ -1217,19 +1338,24 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
           </div>
         )}
 
-        {result && selectedSummary && (
+        {(inScenarioMode || defaultGroupCalendars.length > 0 || defaultInitError) && (
           <>
             <div className="panel sticky top-3 z-20 p-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h3 className="text-xl font-bold text-slate-800">Projected Business Impact</h3>
                 <div className="flex items-center gap-2">
                   <p className="text-sm font-semibold text-slate-600">
-                    Selected Scenario: {selectedSummary.scenario_name}
-                    {manualRecalc ? ' (Edited)' : ''}
+                    Selected Scenario: {inScenarioMode ? selectedSummary?.scenario_name : 'Default'}
+                    {(inScenarioMode ? manualRecalc : defaultHasEdits) ? ' (Edited)' : ''}
                   </p>
                   {isRecalculating && <Loader2 className="h-4 w-4 animate-spin text-slate-500" />}
                 </div>
               </div>
+              {defaultInitError && (
+                <div className="mt-2 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">
+                  {defaultInitError}
+                </div>
+              )}
               {manualEditError && (
                 <div className="mt-2 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">
                   {manualEditError}
@@ -1260,7 +1386,7 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
                     onClick={resetCalendarEdits}
                     className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700"
                   >
-                    Reset to scenario
+                    {inScenarioMode ? 'Reset to scenario' : 'Reset'}
                   </button>
                   <button
                     type="button"
