@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Bar, BarChart, CartesianGrid, Cell, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
+import { Bar, BarChart, CartesianGrid, Cell, LabelList, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { Download, Loader2, Play, RotateCcw, Save, ChevronDown, Trash2 } from 'lucide-react'
 import AppLayout from '../components/layout/AppLayout'
 import { recalculatePromoCalendar, runPromoCalendarJob } from '../services/promoCalendarApi'
@@ -14,6 +14,26 @@ let PROMO_PAGE_MEMORY_CACHE = null
 const formatPct = (value) => `${value >= 0 ? '+' : ''}${value.toFixed(1)}%`
 const formatInr = (value) => `INR ${new Intl.NumberFormat('en-IN', { maximumFractionDigits: 0 }).format(Math.round(Number(value) || 0))}`
 const formatInt = (value) => new Intl.NumberFormat('en-IN', { maximumFractionDigits: 0 }).format(Math.round(Number(value) || 0))
+const renderBarLabel = (props) => {
+  const { x, y, width, height, value } = props
+  const numericValue = Number(value)
+  if (!Number.isFinite(numericValue)) return null
+  const labelX = Number(x) + Number(width) / 2
+  const isNegative = numericValue < 0
+  const labelY = isNegative ? Number(y) + Number(height) + 14 : Number(y) - 8
+  return (
+    <text
+      x={labelX}
+      y={labelY}
+      fill="#0F172A"
+      fontSize={11}
+      fontWeight={800}
+      textAnchor="middle"
+    >
+      {formatPct(numericValue)}
+    </text>
+  )
+}
 const resolveErrorMessage = (errorValue) => {
   if (!errorValue) return 'Failed to run promo optimization.'
   if (typeof errorValue === 'string') return errorValue
@@ -173,7 +193,7 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
   const [isRunning, setIsRunning] = useState(false)
   const [progress, setProgress] = useState({ progress_pct: 0, stage: '' })
   const [error, setError] = useState('')
-  const [simulateCollapsed, setSimulateCollapsed] = useState(false)
+  const [simulateCollapsed, setSimulateCollapsed] = useState(true)
   const [selectionCollapsed, setSelectionCollapsed] = useState(false)
   const [editedGroupCalendars, setEditedGroupCalendars] = useState([])
   const [manualRecalc, setManualRecalc] = useState(null)
@@ -1057,33 +1077,35 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
                   {Math.min((page + 1) * PAGE_SIZE, displaySummaries.length)} of {displaySummaries.length}
                 </div>
 
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {pagedSummaries.map((row) => (
-                    <button
-                      key={row.scenario_id}
-                      type="button"
-                      onClick={() => setSelectedScenarioId(row.scenario_id)}
-                      className={`rounded-md border px-3 py-2 text-left text-xs font-semibold ${
-                        selectedId === row.scenario_id
-                          ? 'border-[#2563EB] bg-blue-50 text-[#2563EB]'
-                          : 'border-slate-300 bg-white text-slate-700'
-                      }`}
-                    >
-                      {row.scenario_name}
-                    </button>
-                  ))}
-                </div>
-
                 <div className="mt-4 rounded-lg border border-slate-200 bg-white p-3">
-                  <h4 className="text-base font-semibold text-[#0F172A]">View and compare scenarios</h4>
+                  <div className="flex items-center justify-between gap-2">
+                    <h4 className="text-base font-semibold text-[#0F172A]">View and compare scenarios</h4>
+                    <div className="flex items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        disabled={page === 0}
+                        onClick={() => setPage((prev) => Math.max(0, prev - 1))}
+                        className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-40"
+                      >
+                        Previous
+                      </button>
+                      <span className="text-xs font-semibold text-slate-600">
+                        Page {Math.min(page + 1, pageCount)} / {pageCount}
+                      </span>
+                      <button
+                        type="button"
+                        disabled={page >= pageCount - 1}
+                        onClick={() => setPage((prev) => Math.min(pageCount - 1, prev + 1))}
+                        className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-40"
+                      >
+                        Next
+                      </button>
+                    </div>
+                  </div>
                   <p className="mt-1 mb-2 text-[11px] font-medium text-slate-600">
                     Scenarios selected to surface the highest positive volume %, revenue %, and gross margin % vs base (up to three distinct
                     scenarios). Change filters to see more.
                   </p>
-                  {displaySummaries?.[0]?.scenario_id ? (
-                    <p className="text-center text-[11px] font-semibold text-slate-600">Base Anchor {displaySummaries[0].scenario_id}</p>
-                  ) : null}
-
                   <div className="mt-3 h-[320px] w-full">
                     <ResponsiveContainer>
                       <BarChart
@@ -1095,13 +1117,28 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
                           profitPct: Number(row.profit_uplift_pct) * 100,
                         }))}
                         margin={{ top: 16, right: 20, left: 8, bottom: 16 }}
+                        onClick={(state) => {
+                          const scenarioId = state?.activePayload?.[0]?.payload?.scenarioId
+                          if (scenarioId) setSelectedScenarioId(scenarioId)
+                        }}
                       >
                         <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" />
                         <XAxis dataKey="name" tick={{ fontSize: 11, fill: '#0F172A', fontWeight: 700 }} />
                         <YAxis tickFormatter={(v) => `${v}%`} tick={{ fontSize: 11, fill: '#0F172A', fontWeight: 700 }} />
                         <Tooltip formatter={(v) => `${Number(v).toFixed(2)}%`} />
                         <Legend verticalAlign="bottom" align="center" wrapperStyle={{ fontSize: 11, fontWeight: 600 }} />
-                        <Bar dataKey="volumePct" name="Volume %" fill="#2563EB">
+                        <Bar
+                          dataKey="volumePct"
+                          name="Volume %"
+                          fill="#2563EB"
+                          cursor="pointer"
+                          isAnimationActive={false}
+                          onClick={(entry) => setSelectedScenarioId(entry?.scenarioId)}
+                        >
+                          <LabelList
+                            dataKey="volumePct"
+                            content={renderBarLabel}
+                          />
                           {pagedSummaries.map((row) => (
                             <Cell
                               key={`v-${row.scenario_id}`}
@@ -1111,8 +1148,32 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
                             />
                           ))}
                         </Bar>
-                        <Bar dataKey="revenuePct" name="Revenue %" fill="#16A34A" />
-                        <Bar dataKey="profitPct" name="Profit %" fill="#F97316" />
+                        <Bar
+                          dataKey="revenuePct"
+                          name="Revenue %"
+                          fill="#16A34A"
+                          cursor="pointer"
+                          isAnimationActive={false}
+                          onClick={(entry) => setSelectedScenarioId(entry?.scenarioId)}
+                        >
+                          <LabelList
+                            dataKey="revenuePct"
+                            content={renderBarLabel}
+                          />
+                        </Bar>
+                        <Bar
+                          dataKey="profitPct"
+                          name="Profit %"
+                          fill="#F97316"
+                          cursor="pointer"
+                          isAnimationActive={false}
+                          onClick={(entry) => setSelectedScenarioId(entry?.scenarioId)}
+                        >
+                          <LabelList
+                            dataKey="profitPct"
+                            content={renderBarLabel}
+                          />
+                        </Bar>
                       </BarChart>
                     </ResponsiveContainer>
                   </div>
@@ -1150,28 +1211,6 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
                       />
                     </label>
                   </div>
-                </div>
-
-                <div className="mt-2 flex items-center justify-end gap-2">
-                  <button
-                    type="button"
-                    disabled={page === 0}
-                    onClick={() => setPage((prev) => Math.max(0, prev - 1))}
-                    className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-40"
-                  >
-                    Previous
-                  </button>
-                  <span className="text-xs font-semibold text-slate-600">
-                    Page {Math.min(page + 1, pageCount)} / {pageCount}
-                  </span>
-                  <button
-                    type="button"
-                    disabled={page >= pageCount - 1}
-                    onClick={() => setPage((prev) => Math.min(pageCount - 1, prev + 1))}
-                    className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-40"
-                  >
-                    Next
-                  </button>
                 </div>
               </>
             )}
