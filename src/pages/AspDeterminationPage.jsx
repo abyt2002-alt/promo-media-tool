@@ -191,11 +191,11 @@ const downloadSavedScenariosWorkbook = (savedScenarios) => {
         ['Base Volume', Math.round(baseVolume)],
         ['Recommended Volume', Math.round(recommendedVolume)],
         ['Volume Increase %', Number(volumeUpliftPct.toFixed(2))],
-        ['Base Profit', Math.round(baseProfit)],
-        ['Recommended Profit', Math.round(recommendedProfit)],
-        ['Profit Increase %', Number(profitUpliftPct.toFixed(2))],
+        ['Base Gross Margin', Math.round(baseProfit)],
+        ['Recommended Gross Margin', Math.round(recommendedProfit)],
+        ['Gross Margin Increase %', Number(profitUpliftPct.toFixed(2))],
       ]
-      const header = ['Product', 'Base Price', 'Recommended Price', 'Base Volume', 'Recommended Volume', 'Volume %', 'Revenue %', 'Profit %']
+      const header = ['Product', 'Base Price', 'Recommended Price', 'Base Volume', 'Recommended Volume', 'Volume %', 'Revenue %', 'Gross Margin %']
       const dataRows = (scenario.rows ?? []).map((row) => [
         row.productName,
         Math.round(row.baseAsp ?? 0),
@@ -1991,7 +1991,7 @@ const AspDeterminationPage = () => {
                   </p>
                 </div>
                 <div className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-2 text-center">
-                  <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Profit</p>
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Gross Margin</p>
                   <p className="mt-1 text-sm font-bold text-slate-800">
                     {(scenarioConfirm.profitLiftPct * 100 >= 0 ? '+' : '') + (scenarioConfirm.profitLiftPct * 100).toFixed(1)}%
                   </p>

@@ -25,7 +25,7 @@ const ACTION_CONFIG = {
   reduce: {
     label: 'Reduce Price',
     subtitle: 'High price sensitivity',
-    rule: '|E| > 1.1',
+    rule: '|ELS| > 1.1',
     recommendation:
       'Products in this bucket are highly price sensitive. Consider reducing ASP selectively.',
     card: 'border-rose-200 bg-rose-50',
@@ -34,7 +34,7 @@ const ACTION_CONFIG = {
   hold: {
     label: 'Hold Price',
     subtitle: 'Healthy pricing zone',
-    rule: '0.9 <= |E| <= 1.1',
+    rule: '0.9 <= |ELS| <= 1.1',
     recommendation:
       'Products in this bucket are near the target elasticity zone. Maintain current ASP.',
     card: 'border-emerald-200 bg-emerald-50',
@@ -43,7 +43,7 @@ const ACTION_CONFIG = {
   increase: {
     label: 'Increase Price',
     subtitle: 'Price headroom available',
-    rule: '|E| < 0.9',
+    rule: '|ELS| < 0.9',
     recommendation:
       'Products in this bucket show price headroom. Consider testing ASP increases.',
     card: 'border-blue-200 bg-blue-50',
@@ -143,7 +143,7 @@ const InsightsSidebar = ({
       {portfolioElasticityBands && (
         <div className="panel p-4">
           <h3 className="text-sm font-bold text-slate-800">Portfolio Pricing Actions</h3>
-          <p className="mt-1 text-[11px] text-slate-500">Based on absolute own-price elasticity (|E|)</p>
+          <p className="mt-1 text-[11px] text-slate-500">Based on absolute own-price elasticity (|ELS|)</p>
 
           <div className="mt-2.5 space-y-1.5">
             <ActionCard

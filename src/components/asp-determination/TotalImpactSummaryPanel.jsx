@@ -49,7 +49,7 @@ const TotalImpactSummaryPanel = ({ rows = [] }) => {
         </div>
 
         <div className="rounded-lg border border-slate-200 bg-white px-3 py-2.5">
-          <p className="font-semibold text-slate-500">Profit</p>
+          <p className="font-semibold text-slate-500">Gross Margin</p>
           <div className="mt-1 flex items-end justify-between gap-2">
             <p className={`text-3xl font-extrabold leading-none ${profitDeltaPct >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
               {formatSignedPct(profitDeltaPct)}

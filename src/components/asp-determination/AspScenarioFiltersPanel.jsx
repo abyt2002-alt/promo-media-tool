@@ -199,7 +199,7 @@ const AspScenarioFiltersPanel = ({
           onChange={(value) => onControlsChange({ minRevenueUpliftPct: value })}
         />
         <NumberInput
-          label="Min Profit % Increase"
+          label="Min Gross Margin % Increase"
           value={controls.minProfitUpliftPct}
           min={-100}
           max={500}

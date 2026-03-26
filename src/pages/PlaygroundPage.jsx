@@ -104,7 +104,7 @@ const PlaygroundPage = () => {
       }}
       onDownloadScenario={() => {
         if (!selectedScenario || !sortedRows.length) return
-        const headers = ['Product', 'Base Price', 'Scenario Price', 'Edited Price', 'Base Volume', 'New Volume', 'Volume Change %', 'Revenue Change %', 'Profit Change %']
+        const headers = ['Product', 'Base Price', 'Scenario Price', 'Edited Price', 'Base Volume', 'New Volume', 'Volume Change %', 'Revenue Change %', 'Gross Margin Change %']
         const dataRows = sortedRows.map((row) => [
           row.productName,
           Math.round(row.baseAsp),
@@ -180,7 +180,7 @@ const PlaygroundPage = () => {
                 <p className="text-xs text-slate-500">Base: {formatInt(baselineTotals.totalVolume)}</p>
               </div>
               <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Total Profit</p>
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Total Gross Margin</p>
                 <p className="mt-1 text-2xl font-extrabold text-slate-800">INR {formatInt(totals.totalProfit)}</p>
                 <p className="text-xs text-slate-500">Base: INR {formatInt(baselineTotals.totalProfit)}</p>
               </div>

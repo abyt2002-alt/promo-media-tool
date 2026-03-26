@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Bar, BarChart, CartesianGrid, Cell, LabelList, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { Download, Loader2, Play, RotateCcw, Save, ChevronDown, Trash2, Sparkles } from 'lucide-react'
+import * as XLSX from 'xlsx'
 import AppLayout from '../components/layout/AppLayout'
 import { recalculatePromoCalendar, runPromoCalendarJob } from '../services/promoCalendarApi'
 
@@ -59,38 +60,53 @@ const downloadFile = (content, fileName, mimeType = 'text/csv;charset=utf-8;') =
 
 const escapeCsv = (value) => `"${String(value ?? '').replaceAll('"', '""')}"`
 
-const buildCalendarCsv = (entry) => {
-  const lines = []
-  lines.push(`Saved At,${escapeCsv(entry.savedAt)}`)
-  lines.push(`Scenario,${escapeCsv(entry.scenarioName)}`)
-  lines.push(`Scenario ID,${escapeCsv(entry.scenarioId)}`)
-  lines.push(`Selected Month,${escapeCsv(entry.selectedMonth ?? '')}`)
-  lines.push(`Edited,${escapeCsv(entry.edited ? 'Yes' : 'No')}`)
-  lines.push('')
-  lines.push('Totals')
-  lines.push('Metric,Base,Selected,Change %')
+const buildCalendarRows = (entry) => {
+  const rows = []
+  rows.push(['Saved At', String(entry.savedAt ?? '')])
+  rows.push(['Scenario', String(entry.scenarioName ?? '')])
+  rows.push(['Scenario ID', String(entry.scenarioId ?? '')])
+  rows.push(['Selected Month', String(entry.selectedMonth ?? '')])
+  rows.push(['Edited', entry.edited ? 'Yes' : 'No'])
+  rows.push([])
+  rows.push(['Totals'])
+  rows.push(['Metric', 'Base', 'Selected', 'Change %'])
   const safePct = (next, base) => {
     const b = Number(base) || 0
     if (Math.abs(b) <= 1e-9) return 0
     return ((Number(next) - b) / b) * 100
   }
-  lines.push(`Volume,${Number(entry.baseTotals?.total_volume ?? 0).toFixed(3)},${Number(entry.selectedTotals?.total_volume ?? 0).toFixed(3)},${safePct(entry.selectedTotals?.total_volume ?? 0, entry.baseTotals?.total_volume ?? 0).toFixed(3)}`)
-  lines.push(`Revenue,${Number(entry.baseTotals?.total_revenue ?? 0).toFixed(3)},${Number(entry.selectedTotals?.total_revenue ?? 0).toFixed(3)},${safePct(entry.selectedTotals?.total_revenue ?? 0, entry.baseTotals?.total_revenue ?? 0).toFixed(3)}`)
-  lines.push(`Profit,${Number(entry.baseTotals?.total_profit ?? 0).toFixed(3)},${Number(entry.selectedTotals?.total_profit ?? 0).toFixed(3)},${safePct(entry.selectedTotals?.total_profit ?? 0, entry.baseTotals?.total_profit ?? 0).toFixed(3)}`)
-  lines.push('')
-  lines.push('Weekly Promo Calendar')
+  rows.push([
+    'Volume',
+    Number(entry.baseTotals?.total_volume ?? 0).toFixed(3),
+    Number(entry.selectedTotals?.total_volume ?? 0).toFixed(3),
+    safePct(entry.selectedTotals?.total_volume ?? 0, entry.baseTotals?.total_volume ?? 0).toFixed(3),
+  ])
+  rows.push([
+    'Revenue',
+    Number(entry.baseTotals?.total_revenue ?? 0).toFixed(3),
+    Number(entry.selectedTotals?.total_revenue ?? 0).toFixed(3),
+    safePct(entry.selectedTotals?.total_revenue ?? 0, entry.baseTotals?.total_revenue ?? 0).toFixed(3),
+  ])
+  rows.push([
+    'Gross Margin',
+    Number(entry.baseTotals?.total_profit ?? 0).toFixed(3),
+    Number(entry.selectedTotals?.total_profit ?? 0).toFixed(3),
+    safePct(entry.selectedTotals?.total_profit ?? 0, entry.baseTotals?.total_profit ?? 0).toFixed(3),
+  ])
+  rows.push([])
+  rows.push(['Weekly Discount Calendar'])
   const weeks = Array.from({ length: 27 }).map((_, idx) => `W${idx + 1}`)
-  lines.push(['Price Point Group', ...weeks].join(','))
+  rows.push(['Price Point Group', ...weeks])
   ;(entry.groupCalendars ?? []).forEach((group) => {
     const discounts = Array.from({ length: 27 }).map((_, idx) => Number(group?.weekly_discounts?.[idx] ?? 0))
-    lines.push([escapeCsv(group.group_name), ...discounts.map((d) => d.toFixed(0))].join(','))
+    rows.push([String(group.group_name ?? ''), ...discounts.map((d) => d.toFixed(0))])
   })
-  lines.push('')
-  lines.push('Product Impact')
-  lines.push(['Product', 'Base Price', 'Current Volume', 'New Volume', 'Volume Change %', 'Current Revenue', 'New Revenue', 'Revenue Change %', 'Current Profit', 'New Profit', 'Profit Change %'].join(','))
+  rows.push([])
+  rows.push(['Product Impact'])
+  rows.push(['Product', 'Base Price', 'Current Volume', 'New Volume', 'Volume Change %', 'Current Revenue', 'New Revenue', 'Revenue Change %', 'Current Gross Margin', 'New Gross Margin', 'Gross Margin Change %'])
   ;(entry.productImpacts ?? []).forEach((row) => {
-    lines.push([
-      escapeCsv(row.product_name),
+    rows.push([
+      String(row.product_name ?? ''),
       Number(row.base_price ?? 0).toFixed(3),
       Number(row.current_volume ?? 0).toFixed(3),
       Number(row.new_volume ?? 0).toFixed(3),
@@ -101,9 +117,20 @@ const buildCalendarCsv = (entry) => {
       Number(row.current_profit ?? 0).toFixed(3),
       Number(row.new_profit ?? 0).toFixed(3),
       (Number(row.profit_change_pct ?? 0) * 100).toFixed(3),
-    ].join(','))
+    ])
   })
-  return lines.join('\n')
+  return rows
+}
+
+const buildCalendarCsv = (entry) => {
+  const rows = buildCalendarRows(entry)
+  return rows.map((row) => row.map((cell) => escapeCsv(cell)).join(',')).join('\n')
+}
+
+const toSheetName = (value, fallback) => {
+  const raw = String(value || fallback || 'Scenario')
+  const cleaned = raw.replace(/[:\\/?*\[\]]/g, ' ').trim() || fallback
+  return cleaned.slice(0, 31)
 }
 
 const downloadCsv = (rows) => {
@@ -114,10 +141,10 @@ const downloadCsv = (rows) => {
     'Rank',
     'Volume Uplift %',
     'Revenue Uplift %',
-    'Profit Uplift %',
+    'Gross Margin Uplift %',
     'Total Volume',
     'Total Revenue',
-    'Total Profit',
+    'Total Gross Margin',
   ]
   const lines = [header.join(',')]
   rows.forEach((row) => {
@@ -176,6 +203,26 @@ const zeroTotals = {
   total_profit: 0,
 }
 
+const getSegmentMetaByBasePrice = (basePriceValue) => {
+  const basePrice = Number(basePriceValue) || 0
+  if (basePrice <= 599) {
+    return {
+      label: 'Daily Casual',
+      badgeClass: 'border-blue-200 bg-blue-50 text-blue-700',
+    }
+  }
+  if (basePrice <= 899) {
+    return {
+      label: 'Core Plus',
+      badgeClass: 'border-amber-200 bg-amber-50 text-amber-700',
+    }
+  }
+  return {
+    label: 'Premium',
+    badgeClass: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+  }
+}
+
 const PromoCalendarPage = ({ layoutProps = {} }) => {
   const basePriceOverrides = []
   const hasHydratedCacheRef = useRef(false)
@@ -224,6 +271,7 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
   const [saveToast, setSaveToast] = useState('')
   const [isSaveDialogOpen, setIsSaveDialogOpen] = useState(false)
   const [saveDialogName, setSaveDialogName] = useState('')
+  const [scenarioPreviewId, setScenarioPreviewId] = useState(null)
   const savedMenuRef = useRef(null)
   const recalcDebounceRef = useRef(null)
 
@@ -528,7 +576,12 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
     ? (summaries.find((row) => row.scenario_id === selectedId) ?? null)
     : null
   const selectedDetail = selectedSummary ? result?.scenario_details?.[selectedSummary.scenario_id] : null
+  const previewSummary = scenarioPreviewId
+    ? (summaries.find((row) => row.scenario_id === scenarioPreviewId) ?? null)
+    : null
+  const previewDetail = previewSummary ? result?.scenario_details?.[previewSummary.scenario_id] : null
   const inScenarioMode = Boolean(result && selectedSummary)
+  const hasUnsavedEdits = Boolean(defaultHasEdits || manualRecalc)
 
   const activeGroupCalendars = inScenarioMode
     ? (editedGroupCalendars.length ? editedGroupCalendars : (selectedDetail?.group_calendars ?? []))
@@ -574,6 +627,17 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
       recalcDebounceRef.current = null
     }
   }, [])
+
+  useEffect(() => {
+    if (!scenarioPreviewId) return undefined
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        setScenarioPreviewId(null)
+      }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [scenarioPreviewId])
 
   useEffect(() => {
     if (!inScenarioMode) return
@@ -673,6 +737,23 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
     setManualEditError('')
   }
 
+  const openScenarioPreview = (scenarioId) => {
+    if (!scenarioId) return
+    setScenarioPreviewId(scenarioId)
+  }
+
+  const selectScenarioFromPreview = () => {
+    if (!previewSummary?.scenario_id) return
+    if (hasUnsavedEdits) {
+      const shouldDiscard = window.confirm(
+        'You have unsaved calendar edits. Selecting this scenario will discard them. Continue?',
+      )
+      if (!shouldDiscard) return
+    }
+    setSelectedScenarioId(previewSummary.scenario_id)
+    setScenarioPreviewId(null)
+  }
+
   const applyPromoApplier = async () => {
     const source = activeGroupCalendars.length ? activeGroupCalendars : (selectedDetail?.group_calendars ?? [])
     if (!source.length) return
@@ -706,57 +787,60 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
     const safeBase = useAbsBase ? Math.max(1e-6, Math.abs(Number(baseValue) || 0)) : Math.max(1e-6, Number(baseValue) || 0)
     return ((Number(nextValue) || 0) - (Number(baseValue) || 0)) / safeBase * 100
   }
+  const buildImpactCards = (baseTotalsInput, selectedTotalsInput, productImpactsInput) => {
+    const grossRevenueFromImpacts = (productImpactsInput ?? []).reduce(
+      (acc, row) => {
+        const basePrice = Number(row?.base_price) || 0
+        const baseVolume = Number(row?.current_volume) || 0
+        const nextVolume = Number(row?.new_volume) || 0
+        acc.base += basePrice * baseVolume
+        acc.next += basePrice * nextVolume
+        return acc
+      },
+      { base: 0, next: 0 },
+    )
 
-  const grossRevenueFromImpacts = activeProductImpacts.reduce(
-    (acc, row) => {
-      const basePrice = Number(row?.base_price) || 0
-      const baseVolume = Number(row?.current_volume) || 0
-      const nextVolume = Number(row?.new_volume) || 0
-      acc.base += basePrice * baseVolume
-      acc.next += basePrice * nextVolume
-      return acc
-    },
-    { base: 0, next: 0 },
-  )
+    const grossRevenueBase = grossRevenueFromImpacts.base > 0 ? grossRevenueFromImpacts.base : Number(baseTotalsInput?.total_revenue ?? 0)
+    const grossRevenueNext = grossRevenueFromImpacts.next > 0 ? grossRevenueFromImpacts.next : Number(selectedTotalsInput?.total_revenue ?? 0)
+    const netRevenueBase = Number(baseTotalsInput?.total_revenue ?? 0)
+    const netRevenueNext = Number(selectedTotalsInput?.total_revenue ?? 0)
+    const profitBase = Number(baseTotalsInput?.total_profit ?? 0)
+    const profitNext = Number(selectedTotalsInput?.total_profit ?? 0)
 
-  const grossRevenueBase = grossRevenueFromImpacts.base > 0 ? grossRevenueFromImpacts.base : Number(baseTotals?.total_revenue ?? 0)
-  const grossRevenueNext = grossRevenueFromImpacts.next > 0 ? grossRevenueFromImpacts.next : Number(selectedTotals?.total_revenue ?? 0)
-  const netRevenueBase = Number(baseTotals?.total_revenue ?? 0)
-  const netRevenueNext = Number(selectedTotals?.total_revenue ?? 0)
-  const profitBase = Number(baseTotals?.total_profit ?? 0)
-  const profitNext = Number(selectedTotals?.total_profit ?? 0)
+    return [
+      {
+        label: 'Volume',
+        pct: calcPct(selectedTotalsInput?.total_volume ?? 0, baseTotalsInput?.total_volume ?? 0, false),
+        base: baseTotalsInput?.total_volume ?? 0,
+        next: selectedTotalsInput?.total_volume ?? 0,
+        money: false,
+      },
+      {
+        label: 'Gross Revenue',
+        pct: calcPct(grossRevenueNext, grossRevenueBase, false),
+        base: grossRevenueBase,
+        next: grossRevenueNext,
+        money: true,
+      },
+      {
+        label: 'Net Revenue',
+        pct: calcPct(netRevenueNext, netRevenueBase, false),
+        base: netRevenueBase,
+        next: netRevenueNext,
+        money: true,
+      },
+      {
+        label: 'Gross Margin',
+        pct: calcPct(profitNext, profitBase, true),
+        base: profitBase,
+        next: profitNext,
+        money: true,
+      },
+    ]
+  }
 
-  const impactCards = [
-    {
-      label: 'Volume',
-      pct: calcPct(selectedTotals?.total_volume ?? 0, baseTotals?.total_volume ?? 0, false),
-      base: baseTotals?.total_volume ?? 0,
-      next: selectedTotals?.total_volume ?? 0,
-      money: false,
-    },
-    {
-      label: 'Gross Revenue',
-      pct: calcPct(grossRevenueNext, grossRevenueBase, false),
-      base: grossRevenueBase,
-      next: grossRevenueNext,
-      money: true,
-    },
-    {
-      label: 'Net Revenue',
-      // Net Revenue = discounted selling price x quantity (from backend total_revenue).
-      pct: calcPct(netRevenueNext, netRevenueBase, false),
-      base: netRevenueBase,
-      next: netRevenueNext,
-      money: true,
-    },
-    {
-      label: 'Profit',
-      pct: calcPct(profitNext, profitBase, true),
-      base: profitBase,
-      next: profitNext,
-      money: true,
-    },
-  ]
+  const impactCards = buildImpactCards(baseTotals, selectedTotals, activeProductImpacts)
+  const previewImpactCards = buildImpactCards(result?.base_totals ?? zeroTotals, previewDetail?.totals ?? zeroTotals, previewDetail?.product_impacts ?? [])
 
   const saveCurrentCalendar = (calendarName) => {
     if (!inScenarioMode && !defaultGroupCalendars.length) return
@@ -790,21 +874,21 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
     setIsSaveDialogOpen(true)
   }
 
-  const downloadCurrentCalendar = () => {
-    if (!result || !selectedSummary) return
-    const entry = {
-      savedAt: new Date().toISOString(),
-      selectedMonth: result?.selected_month ?? controls.selectedMonth ?? '',
-      scenarioId: selectedSummary.scenario_id,
-      scenarioName: selectedSummary.scenario_name + (manualRecalc ? ' (Edited)' : ''),
-      edited: Boolean(manualRecalc),
-      baseTotals: baseTotals ?? null,
-      selectedTotals: selectedTotals ?? null,
-      groupCalendars: activeGroupCalendars ?? [],
-      productImpacts: activeProductImpacts ?? [],
-    }
-    const csv = buildCalendarCsv(entry)
-    downloadFile(csv, `promo_calendar_${(selectedSummary.scenario_name || 'scenario').replace(/[^a-z0-9]+/gi, '_').toLowerCase()}_${new Date().toISOString().slice(0, 10)}.csv`)
+  const downloadSavedCalendarsWorkbook = () => {
+    if (!savedCalendars.length) return
+    const workbook = XLSX.utils.book_new()
+    savedCalendars.forEach((entry, index) => {
+      const rows = buildCalendarRows(entry)
+      const worksheet = XLSX.utils.aoa_to_sheet(rows)
+      const sheetName = toSheetName(entry?.calendarName || entry?.scenarioName, `Scenario ${index + 1}`)
+      XLSX.utils.book_append_sheet(workbook, worksheet, sheetName)
+    })
+    const content = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' })
+    downloadFile(
+      content,
+      `promo_calendar_saved_scenarios_${new Date().toISOString().slice(0, 10)}.xlsx`,
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    )
   }
 
   const loadSavedCalendar = (entry) => {
@@ -861,14 +945,6 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
     downloadFile(csv, `promo_calendar_saved_${(entry?.scenarioName || 'scenario').replace(/[^a-z0-9]+/gi, '_').toLowerCase()}_${String(entry?.savedAt || '').slice(0, 10)}.csv`)
   }
 
-  const downloadAllSavedCalendars = () => {
-    downloadFile(
-      JSON.stringify(savedCalendars, null, 2),
-      `promo_calendar_saved_bundle_${new Date().toISOString().slice(0, 10)}.json`,
-      'application/json;charset=utf-8;',
-    )
-  }
-
   return (
     <AppLayout {...layoutProps}>
       <div className="space-y-6">
@@ -876,8 +952,8 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
           <div className="relative inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-2 py-1 shadow-sm">
             <button
               type="button"
-              onClick={downloadCurrentCalendar}
-              disabled={!result || !selectedSummary}
+              onClick={downloadSavedCalendarsWorkbook}
+              disabled={!savedCalendars.length}
               className="inline-flex items-center gap-1 rounded-full border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-50"
             >
               <Download className="h-3.5 w-3.5" />
@@ -899,15 +975,6 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
               <div className="absolute right-0 top-10 z-40 w-[360px] rounded-lg border border-slate-200 bg-white p-2 shadow-xl">
                 <div className="mb-2 flex items-center justify-between px-1">
                   <p className="text-xs font-bold uppercase tracking-wide text-slate-600">Saved Calendars</p>
-                  <button
-                    type="button"
-                    onClick={downloadAllSavedCalendars}
-                    disabled={!savedCalendars.length}
-                    className="inline-flex items-center gap-1 rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-700 disabled:opacity-50"
-                  >
-                    <Download className="h-3 w-3" />
-                    Download All
-                  </button>
                 </div>
                 <div className="max-h-64 space-y-1 overflow-auto">
                   {savedCalendars.length === 0 && (
@@ -1010,6 +1077,114 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
           </div>
         )}
 
+        {scenarioPreviewId && previewSummary && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4"
+            onClick={() => setScenarioPreviewId(null)}
+          >
+            <div
+              className="w-full max-w-7xl rounded-xl border border-slate-200 bg-white shadow-2xl"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="border-b border-slate-200 px-4 py-3">
+                <h4 className="text-lg font-bold text-slate-800">
+                  Scenario Preview: {previewSummary.scenario_name}
+                </h4>
+                <p className="mt-1 text-xs font-medium text-slate-600">
+                  Baseline impact and read-only discount calendar preview.
+                </p>
+              </div>
+
+              <div className="max-h-[72vh] space-y-4 overflow-auto px-4 py-4">
+                <div className="grid grid-cols-1 gap-3 lg:grid-cols-4">
+                  {previewImpactCards.map((item) => (
+                    <div key={`preview-${item.label}`} className="rounded-lg border border-slate-200 bg-white px-4 py-3">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">{item.label}</p>
+                      <p className={`mt-1 text-3xl font-extrabold ${item.pct >= 0 ? 'text-[#047857]' : 'text-[#BE123C]'}`}>{formatPct(item.pct)}</p>
+                      <p className="mt-2 text-sm font-semibold text-slate-700">
+                        {item.money ? formatInr(item.base) : formatInt(item.base)} {'->'} {item.money ? formatInr(item.next) : formatInt(item.next)}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="overflow-x-auto rounded-lg border border-slate-200">
+                  <table className="w-full table-fixed divide-y divide-slate-200 text-xs">
+                    <colgroup>
+                      <col style={{ width: '12%' }} />
+                      {Array.from({ length: 27 }).map((_, index) => (
+                        <col key={`preview-col-${index}`} style={{ width: `${88 / 27}%` }} />
+                      ))}
+                    </colgroup>
+                    <thead className="bg-slate-50">
+                      <tr>
+                        <th
+                          rowSpan={2}
+                          className="sticky left-0 z-20 border-r border-slate-200 bg-slate-50 px-2 py-1.5 text-left text-[10px] font-bold uppercase tracking-wide text-slate-600"
+                        >
+                          SKU group
+                        </th>
+                        <th colSpan={15} className="border-r border-slate-200 px-1 py-1 text-center text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                          Base price (W1-W15)
+                        </th>
+                        <th colSpan={12} className="px-1 py-1 text-center text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                          Promo Window (W16-W27)
+                        </th>
+                      </tr>
+                      <tr>
+                        {Array.from({ length: 27 }).map((_, index) => (
+                          <th
+                            key={`preview-week-${index}`}
+                            className={`px-1 py-1 text-center text-[10px] font-bold uppercase tracking-wide ${
+                              index < 15 ? 'bg-slate-50 text-slate-500' : 'bg-blue-50 text-[#2563EB]'
+                            }`}
+                          >
+                            W{index + 1}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 bg-white">
+                      {(previewDetail?.group_calendars ?? []).map((group) => (
+                        <tr key={`preview-${group.group_id}`}>
+                          <td className="sticky left-0 z-10 border-r border-slate-100 bg-white px-2 py-1.5 align-top">
+                            <p className="text-sm font-bold leading-tight text-slate-800">{group.group_name}</p>
+                            <p className="text-[11px] font-medium text-slate-500">{group.product_count} products</p>
+                          </td>
+                          {(group.weekly_discounts ?? []).map((discount, idx) => (
+                            <td key={`preview-${group.group_id}-${idx}`} className={`px-1 py-1 text-center ${idx < 15 ? 'bg-slate-50/40' : 'bg-white'}`}>
+                              <span className={`inline-flex h-6 w-full items-center justify-center rounded border px-1 text-[10px] font-bold ${getPromoLevelPillClass(discount, idx)}`}>
+                                {Number(discount) === 0 ? '-' : `${Number(discount)}`}
+                              </span>
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 border-t border-slate-200 px-4 py-3">
+                <button
+                  type="button"
+                  onClick={() => setScenarioPreviewId(null)}
+                  className="rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={selectScenarioFromPreview}
+                  className="rounded-md bg-[#2563EB] px-3 py-2 text-sm font-semibold text-white hover:brightness-95"
+                >
+                  Select and Analyze
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="panel p-4">
           <button
             type="button"
@@ -1018,7 +1193,7 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
           >
             <div>
               <h2 className="text-lg font-bold text-slate-800">
-                Simulate promo scenarios with{' '}
+                Simulate price-off scenarios with{' '}
                 <span className="relative inline-flex items-center font-extrabold">
                   <span className="text-[#0F172A]">Trinity</span>
                   <span className="ml-1 text-[#4F46E5]">AI</span>
@@ -1062,7 +1237,7 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
               </div>
             </label>
             <label className="space-y-1 text-xs font-semibold uppercase tracking-wide text-slate-600">
-              Min Promo Weeks
+              Min Discount Weeks
               <input
                 type="number"
                 value={controls.minPromoWeeks}
@@ -1073,7 +1248,7 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
               />
             </label>
             <label className="space-y-1 text-xs font-semibold uppercase tracking-wide text-slate-600">
-              Max Promo Weeks
+              Max Discount Weeks
               <input
                 type="number"
                 value={controls.maxPromoWeeks}
@@ -1179,7 +1354,7 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
                     className="rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700"
                   >
                     <option value="revenue">Sort by Revenue %</option>
-                    <option value="profit">Sort by Profit %</option>
+                    <option value="profit">Sort by Gross Margin %</option>
                     <option value="volume">Sort by Volume %</option>
                   </select>
                   <button
@@ -1193,7 +1368,7 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
                 </div>
 
                 <div className="mt-3 text-xs font-semibold text-slate-600">
-                  {!filtersApplied && !showAllScenarios ? 'Anchor view (Max Volume / Max Revenue / Max Profit). ' : ''}
+                  {!filtersApplied && !showAllScenarios ? 'Anchor view (Max Volume / Max Revenue / Max Gross Margin). ' : ''}
                   Showing {Math.min(page * PAGE_SIZE + 1, displaySummaries.length)}-
                   {Math.min((page + 1) * PAGE_SIZE, displaySummaries.length)} of {displaySummaries.length}
                 </div>
@@ -1240,7 +1415,7 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
                         margin={{ top: 16, right: 20, left: 8, bottom: 16 }}
                         onClick={(state) => {
                           const scenarioId = state?.activePayload?.[0]?.payload?.scenarioId
-                          if (scenarioId) setSelectedScenarioId(scenarioId)
+                          if (scenarioId) openScenarioPreview(scenarioId)
                         }}
                       >
                         <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" />
@@ -1254,7 +1429,7 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
                           fill="#2563EB"
                           cursor="pointer"
                           isAnimationActive={false}
-                          onClick={(entry) => setSelectedScenarioId(entry?.scenarioId)}
+                          onClick={(entry) => openScenarioPreview(entry?.scenarioId)}
                         >
                           <LabelList
                             dataKey="volumePct"
@@ -1265,7 +1440,7 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
                               key={`v-${row.scenario_id}`}
                               cursor="pointer"
                               fill={selectedId === row.scenario_id ? '#1D4ED8' : '#2563EB'}
-                              onClick={() => setSelectedScenarioId(row.scenario_id)}
+                              onClick={() => openScenarioPreview(row.scenario_id)}
                             />
                           ))}
                         </Bar>
@@ -1275,7 +1450,7 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
                           fill="#16A34A"
                           cursor="pointer"
                           isAnimationActive={false}
-                          onClick={(entry) => setSelectedScenarioId(entry?.scenarioId)}
+                          onClick={(entry) => openScenarioPreview(entry?.scenarioId)}
                         >
                           <LabelList
                             dataKey="revenuePct"
@@ -1284,11 +1459,11 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
                         </Bar>
                         <Bar
                           dataKey="profitPct"
-                          name="Profit %"
+                          name="Gross Margin %"
                           fill="#F97316"
                           cursor="pointer"
                           isAnimationActive={false}
-                          onClick={(entry) => setSelectedScenarioId(entry?.scenarioId)}
+                          onClick={(entry) => openScenarioPreview(entry?.scenarioId)}
                         >
                           <LabelList
                             dataKey="profitPct"
@@ -1322,7 +1497,7 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
                       />
                     </label>
                     <label className="text-xs font-semibold uppercase tracking-wide text-slate-600">
-                      Max Profit % Decrease
+                      Max Gross Margin % Decrease
                       <input
                         type="number"
                         min={0}
@@ -1377,8 +1552,8 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
             <div className="panel p-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
-                  <h3 className="text-xl font-bold text-slate-800">Edit Promo Calendar</h3>
-                  <p className="mt-1 text-xs font-medium text-slate-600">Click on a week (W1-W27) to set No Promo / 10% / 20% / 30% / 40%.</p>
+                  <h3 className="text-xl font-bold text-slate-800">Edit Discount Calendar</h3>
+                  <p className="mt-1 text-xs font-medium text-slate-600">Click on a week (W1-W27) to set No Discount / 10% / 20% / 30% / 40%.</p>
                 </div>
                 <div className="flex items-center gap-2">
                   <button
@@ -1446,7 +1621,7 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
                     </select>
                   </label>
                   <label className="text-xs font-semibold text-slate-600">
-                    Promo Level
+                    Discount level
                     <select
                       value={promoApplyLevel}
                       onChange={(event) => setPromoApplyLevel(Number(event.target.value))}
@@ -1454,7 +1629,7 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
                     >
                       {PROMO_LEVEL_OPTIONS.map((level) => (
                         <option key={`lvl-${level}`} value={level}>
-                          {level === 0 ? 'No Promo' : `${level}%`}
+                          {level === 0 ? 'No Discount' : `${level}%`}
                         </option>
                       ))}
                     </select>
@@ -1475,7 +1650,7 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
               <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] font-semibold text-slate-600">
                 {PROMO_LEVEL_OPTIONS.map((level, idx) => (
                   <span key={`legend-${level}`} className={`rounded border px-2 py-0.5 ${getPromoLevelPillClass(level, idx >= 1 ? 16 : 0)}`}>
-                    {level === 0 ? 'No Promo' : `${level}%`}
+                    {level === 0 ? 'No Discount' : `${level}%`}
                   </span>
                 ))}
               </div>
@@ -1517,27 +1692,35 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 bg-white">
-                    {activeGroupCalendars.map((group) => (
-                      <tr key={group.group_id}>
-                        <td className="sticky left-0 z-10 border-r border-slate-100 bg-white px-2 py-1.5 align-top">
-                          <p className="text-sm font-bold leading-tight text-slate-800">{group.group_name}</p>
-                          <p className="text-[11px] font-medium text-slate-500">{group.product_count} products</p>
-                        </td>
-                        {group.weekly_discounts.map((discount, idx) => (
-                          <td key={`${group.group_id}-${idx}`} className={`px-1 py-1 text-center ${idx < 15 ? 'bg-slate-50/40' : 'bg-white'}`}>
-                            <button
-                              type="button"
-                              onClick={(event) => handlePromoCellClick(group.group_id, idx, discount, event)}
-                              disabled={isRecalculating}
-                              className={`h-6 w-full rounded border px-1 text-[10px] font-bold leading-none transition hover:brightness-95 disabled:opacity-60 ${getPromoLevelPillClass(discount, idx)}`}
-                              title="Click to cycle promo level. Shift+Click reverse. Alt+Click reset."
-                            >
-                              {Number(discount) === 0 ? '-' : `${Number(discount)}`}
-                            </button>
+                    {activeGroupCalendars.map((group) => {
+                      const segment = getSegmentMetaByBasePrice(group.base_price)
+                      return (
+                        <tr key={group.group_id}>
+                          <td className="sticky left-0 z-10 border-r border-slate-100 bg-white px-2 py-1.5 align-top">
+                            <div className="flex items-center gap-1.5">
+                              <p className="text-sm font-bold leading-tight text-slate-800">{group.group_name}</p>
+                              <span className={`inline-flex rounded border px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${segment.badgeClass}`}>
+                                {segment.label}
+                              </span>
+                            </div>
+                            <p className="text-[11px] font-medium text-slate-500">{group.product_count} products</p>
                           </td>
-                        ))}
-                      </tr>
-                    ))}
+                          {group.weekly_discounts.map((discount, idx) => (
+                            <td key={`${group.group_id}-${idx}`} className={`px-1 py-1 text-center ${idx < 15 ? 'bg-slate-50/40' : 'bg-white'}`}>
+                              <button
+                                type="button"
+                                onClick={(event) => handlePromoCellClick(group.group_id, idx, discount, event)}
+                                disabled={isRecalculating}
+                                className={`h-6 w-full rounded border px-1 text-[10px] font-bold leading-none transition hover:brightness-95 disabled:opacity-60 ${getPromoLevelPillClass(discount, idx)}`}
+                                title="Click to cycle promo level. Shift+Click reverse. Alt+Click reset."
+                              >
+                                {Number(discount) === 0 ? '-' : `${Number(discount)}`}
+                              </button>
+                            </td>
+                          ))}
+                        </tr>
+                      )
+                    })}
                   </tbody>
                 </table>
               </div>

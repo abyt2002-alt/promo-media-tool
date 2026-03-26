@@ -152,7 +152,7 @@ const HistoricalPromoCalendarPage = ({ layoutProps = {} }) => {
         <div className="panel p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h3 className="text-xl font-bold text-slate-800">Weekly Promo Calendar (Historical)</h3>
+              <h3 className="text-xl font-bold text-slate-800">Historical Discount Calendar</h3>
               <p className="mt-1 text-xs font-medium text-slate-600">
                 Each cell shows weighted average discount % for that price group in that week.
               </p>
@@ -164,7 +164,7 @@ const HistoricalPromoCalendarPage = ({ layoutProps = {} }) => {
           </div>
 
           <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-semibold text-slate-600">
-            <span className="rounded border border-slate-200 bg-slate-100 px-2 py-0.5 text-slate-500">No Promo</span>
+            <span className="rounded border border-slate-200 bg-slate-100 px-2 py-0.5 text-slate-500">No Discount</span>
             <span className="rounded border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-emerald-700">1-10%</span>
             <span className="rounded border border-sky-200 bg-sky-50 px-2 py-0.5 text-sky-700">11-20%</span>
             <span className="rounded border border-amber-200 bg-amber-50 px-2 py-0.5 text-amber-700">21-30%</span>

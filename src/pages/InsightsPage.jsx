@@ -131,7 +131,7 @@ const InsightsPage = () => {
     <AppLayout rightSidebar={rightSidebar}>
       <div className="space-y-5">
         <div className="panel p-5">
-          <h2 className="text-3xl font-bold text-slate-800">Insights</h2>
+          <h2 className="text-3xl font-bold text-slate-800">Insights on price-off strategy</h2>
           <p className="mt-2 max-w-4xl text-sm font-medium text-slate-600">
             Analyze demand response, revenue behavior, and product interactions across the portfolio.
           </p>

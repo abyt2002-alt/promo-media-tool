@@ -5,16 +5,16 @@ import PromoElasticityInsightsPage from './PromoElasticityInsightsPage'
 import PromoCalendarPage from './PromoCalendarPage'
 
 const standaloneNavigation = [
-  { name: 'Historical Promo Calendar', href: '/promo-calendar-optimisation?step=1', icon: CalendarDays },
-  { name: 'Insights', href: '/promo-calendar-optimisation?step=2', icon: SlidersHorizontal },
-  { name: 'Promo Calendar', href: '/promo-calendar-optimisation?step=3', icon: LineChart },
+  { name: 'Historical Discount Calendar', href: '/promo-calendar-optimisation?step=1', icon: CalendarDays },
+  { name: 'Insights on price-off strategy', href: '/promo-calendar-optimisation?step=2', icon: SlidersHorizontal },
+  { name: 'Optimize Discount Calendar', href: '/promo-calendar-optimisation?step=3', icon: LineChart },
 ]
 
 const PromoCalendarOptimisationApp = () => {
   const [searchParams] = useSearchParams()
   const step = searchParams.get('step') || '1'
   const layoutProps = {
-    appTitle: 'Promo Calendar Optimisation',
+    appTitle: 'Consumer Price-Off Optimization',
     navigationItems: standaloneNavigation,
   }
 

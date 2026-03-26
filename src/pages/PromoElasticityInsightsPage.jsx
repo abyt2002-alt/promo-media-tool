@@ -87,16 +87,30 @@ const PromoElasticityInsightsPage = ({ layoutProps = {} }) => {
       const avgPromo20 = count
         ? rows.reduce((sum, row) => sum + Number(row.elasticity_20_view || 0), 0) / count
         : 0
-      const avgPromo40 = count
-        ? rows.reduce((sum, row) => sum + Number(row.elasticity_40_view || 0), 0) / count
-        : 0
+      const weighted = rows.reduce(
+        (acc, row) => {
+          const weightRaw = Number(row.total_volume ?? row.current_volume ?? 1)
+          const weight = Number.isFinite(weightRaw) && weightRaw > 0 ? weightRaw : 1
+          const promoAvg = (
+            Number(row.elasticity_10_view || 0) +
+            Number(row.elasticity_20_view || 0) +
+            Number(row.elasticity_30_view || 0) +
+            Number(row.elasticity_40_view || 0)
+          ) / 4
+          acc.weightedSum += promoAvg * weight
+          acc.weight += weight
+          return acc
+        },
+        { weightedSum: 0, weight: 0 },
+      )
+      const avgDiscountEls = weighted.weight > 0 ? weighted.weightedSum / weighted.weight : 0
 
       return {
         ...segment,
         count,
         avgBase,
         avgPromo20,
-        avgPromo40,
+        avgDiscountEls,
       }
     })
   }, [productsWithSegment])
@@ -158,9 +172,9 @@ const PromoElasticityInsightsPage = ({ layoutProps = {} }) => {
     <AppLayout {...layoutProps}>
       <div className="space-y-6">
         <div className="panel p-4">
-          <h3 className="text-xl font-bold text-slate-800">Promo Elasticity Insights</h3>
+          <h3 className="text-xl font-bold text-slate-800">Insights on price-off strategy</h3>
           <p className="mt-1 text-xs font-medium text-slate-600">
-            Segment-wise point elasticity view using E = beta x price / volume at each price point.
+            Elasticity measure of each SKU in the at base prices and at discount.
           </p>
 
           {error && (
@@ -185,27 +199,37 @@ const PromoElasticityInsightsPage = ({ layoutProps = {} }) => {
                     key={segment.key}
                     type="button"
                     onClick={() => setSelectedSegment(segment.key)}
-                    className={`rounded-lg border p-3 text-left transition ${
-                      active ? `${segment.tint} ring-1 ring-offset-0` : 'border-slate-200 bg-white hover:bg-slate-50'
+                    className={`group rounded-xl border p-4 text-left transition-all duration-200 ${
+                      active
+                        ? `${segment.tint} shadow-sm ring-2 ring-offset-0`
+                        : 'border-slate-200 bg-white hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-sm'
                     }`}
                     style={active ? { borderColor: segment.color, boxShadow: `inset 0 0 0 1px ${segment.color}22` } : undefined}
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <p className="text-sm font-bold text-slate-800">{segment.label}</p>
-                      <span className="text-[11px] font-semibold text-slate-500">{segment.range}</span>
+                      <div className="flex items-center gap-2">
+                        <span
+                          className="inline-block h-2.5 w-2.5 rounded-full"
+                          style={{ backgroundColor: segment.color }}
+                        />
+                        <p className="text-sm font-bold text-slate-800">{segment.label}</p>
+                      </div>
+                      <span className="rounded-full border border-slate-200 bg-white/80 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-slate-600">
+                        {segment.range}
+                      </span>
                     </div>
-                    <div className="mt-2 grid grid-cols-3 gap-2 text-[11px]">
-                      <div>
-                        <p className="font-semibold uppercase tracking-wide text-slate-500">Products</p>
-                        <p className="mt-0.5 text-sm font-bold text-slate-800">{segment.count}</p>
+                    <div className="mt-3 grid grid-cols-3 gap-2 text-[11px]">
+                      <div className="rounded-lg border border-slate-200/80 bg-white/80 px-2 py-1.5">
+                        <p className="font-semibold uppercase tracking-wide text-slate-500">SKUs</p>
+                        <p className="mt-0.5 text-base font-extrabold text-slate-800">{segment.count}</p>
                       </div>
-                      <div>
-                        <p className="font-semibold uppercase tracking-wide text-slate-500">Avg Base E</p>
-                        <p className="mt-0.5 text-sm font-bold text-slate-800">{toFixed2(segment.avgBase)}</p>
+                      <div className="rounded-lg border border-slate-200/80 bg-white/80 px-2 py-1.5">
+                        <p className="font-semibold uppercase tracking-wide text-slate-500">Base Price Els</p>
+                        <p className="mt-0.5 text-base font-extrabold text-slate-800">{toFixed2(segment.avgBase)}</p>
                       </div>
-                      <div>
-                        <p className="font-semibold uppercase tracking-wide text-slate-500">Avg E@40%</p>
-                        <p className="mt-0.5 text-sm font-bold text-slate-800">{toFixed2(segment.avgPromo40)}</p>
+                      <div className="rounded-lg border border-slate-200/80 bg-white/80 px-2 py-1.5">
+                        <p className="font-semibold uppercase tracking-wide text-slate-500">Avg Discount ELS</p>
+                        <p className="mt-0.5 text-base font-extrabold text-slate-800">{toFixed2(segment.avgDiscountEls)}</p>
                       </div>
                     </div>
                   </button>
@@ -229,13 +253,14 @@ const PromoElasticityInsightsPage = ({ layoutProps = {} }) => {
                 <table className="w-full divide-y divide-slate-200 text-sm">
                   <thead className="bg-slate-50">
                     <tr>
-                      <th className="px-3 py-2 text-left text-xs font-bold uppercase tracking-wide text-slate-600">Product</th>
-                      <th className="px-2 py-2 text-right text-xs font-bold uppercase tracking-wide text-slate-600">Base Price</th>
-                      <th className="px-2 py-2 text-right text-xs font-bold uppercase tracking-wide text-slate-600">Base Point E</th>
-                      <th className="px-2 py-2 text-right text-xs font-bold uppercase tracking-wide text-slate-600">Point E @10%</th>
-                      <th className="px-2 py-2 text-right text-xs font-bold uppercase tracking-wide text-slate-600">Point E @20%</th>
-                      <th className="px-2 py-2 text-right text-xs font-bold uppercase tracking-wide text-slate-600">Point E @30%</th>
-                      <th className="px-2 py-2 text-right text-xs font-bold uppercase tracking-wide text-slate-600">Point E @40%</th>
+                      <th className="px-3 py-2 text-left text-xs font-normal uppercase tracking-wide text-slate-600">SKU</th>
+                      <th className="px-2 py-2 text-right text-xs font-normal uppercase tracking-wide text-slate-600">Base Price</th>
+                      <th className="px-2 py-2 text-right text-xs font-normal uppercase tracking-wide text-slate-600">Base Price ELS</th>
+                      <th className="px-2 py-2 text-right text-xs font-normal uppercase tracking-wide text-slate-600">Avg Discount ELS</th>
+                      <th className="px-2 py-2 text-right text-xs font-normal uppercase tracking-wide text-slate-600">Els @10%</th>
+                      <th className="px-2 py-2 text-right text-xs font-normal uppercase tracking-wide text-slate-600">Els @20%</th>
+                      <th className="px-2 py-2 text-right text-xs font-normal uppercase tracking-wide text-slate-600">Els @30%</th>
+                      <th className="px-2 py-2 text-right text-xs font-normal uppercase tracking-wide text-slate-600">Els @40%</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 bg-white">
@@ -248,18 +273,28 @@ const PromoElasticityInsightsPage = ({ layoutProps = {} }) => {
                           className={`cursor-pointer ${active ? 'bg-blue-50/40' : 'hover:bg-slate-50'}`}
                         >
                           <td className="px-3 py-2 text-sm font-semibold text-slate-800">{item.product_name}</td>
-                          <td className="px-2 py-2 text-right text-sm font-semibold text-slate-700">{formatInr(item.base_price)}</td>
-                          <td className="px-2 py-2 text-right text-sm font-bold text-slate-800">{toFixed2(item.elasticity_base_view)}</td>
-                          <td className="px-2 py-2 text-right text-sm font-semibold text-slate-700">{toFixed2(item.elasticity_10_view)}</td>
-                          <td className="px-2 py-2 text-right text-sm font-semibold text-slate-700">{toFixed2(item.elasticity_20_view)}</td>
-                          <td className="px-2 py-2 text-right text-sm font-semibold text-slate-700">{toFixed2(item.elasticity_30_view)}</td>
-                          <td className="px-2 py-2 text-right text-sm font-semibold text-slate-700">{toFixed2(item.elasticity_40_view)}</td>
+                          <td className="px-2 py-2 text-right text-sm font-normal text-slate-700">{formatInr(item.base_price)}</td>
+                          <td className="px-2 py-2 text-right text-sm font-normal text-slate-800">{toFixed2(item.elasticity_base_view)}</td>
+                          <td className="px-2 py-2 text-right text-sm font-normal text-slate-700">
+                            {toFixed2(
+                              (
+                                Number(item.elasticity_10_view || 0) +
+                                Number(item.elasticity_20_view || 0) +
+                                Number(item.elasticity_30_view || 0) +
+                                Number(item.elasticity_40_view || 0)
+                              ) / 4,
+                            )}
+                          </td>
+                          <td className="px-2 py-2 text-right text-sm font-normal text-slate-700">{toFixed2(item.elasticity_10_view)}</td>
+                          <td className="px-2 py-2 text-right text-sm font-normal text-slate-700">{toFixed2(item.elasticity_20_view)}</td>
+                          <td className="px-2 py-2 text-right text-sm font-normal text-slate-700">{toFixed2(item.elasticity_30_view)}</td>
+                          <td className="px-2 py-2 text-right text-sm font-normal text-slate-700">{toFixed2(item.elasticity_40_view)}</td>
                         </tr>
                       )
                     })}
                     {!segmentRows.length && (
                       <tr>
-                        <td colSpan={7} className="px-3 py-6 text-center text-sm font-semibold text-slate-500">
+                        <td colSpan={8} className="px-3 py-6 text-center text-sm font-semibold text-slate-500">
                           No products in this segment.
                         </td>
                       </tr>

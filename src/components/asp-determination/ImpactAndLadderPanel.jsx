@@ -95,7 +95,7 @@ const ImpactAndLadderPanel = ({ rows = [], onOpenLadderModal, sticky = false }) 
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <MetricBarCard label="Volume" baseValue={baseVolume} newValue={newVolume} />
             <MetricBarCard label="Revenue" baseValue={baseRevenue} newValue={newRevenue} isCurrency />
-            <MetricBarCard label="Profit" baseValue={baseProfit} newValue={newProfit} isCurrency />
+            <MetricBarCard label="Gross Margin" baseValue={baseProfit} newValue={newProfit} isCurrency />
           </div>
         </div>
 

@@ -34,9 +34,9 @@ const AspOptimizationTable = ({ rows }) => {
               <th className="px-3 py-2 text-right font-semibold text-slate-600">Current Revenue</th>
               <th className="px-3 py-2 text-right font-semibold text-slate-600">Optimized Revenue</th>
               <th className="px-3 py-2 text-right font-semibold text-slate-600">Revenue Change %</th>
-              <th className="px-3 py-2 text-right font-semibold text-slate-600">Current Profit</th>
-              <th className="px-3 py-2 text-right font-semibold text-slate-600">Optimized Profit</th>
-              <th className="px-3 py-2 text-right font-semibold text-slate-600">Profit Change %</th>
+              <th className="px-3 py-2 text-right font-semibold text-slate-600">Current Gross Margin</th>
+              <th className="px-3 py-2 text-right font-semibold text-slate-600">Optimized Gross Margin</th>
+              <th className="px-3 py-2 text-right font-semibold text-slate-600">Gross Margin Change %</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 bg-white">

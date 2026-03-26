@@ -1,9 +1,9 @@
 import { Link, useLocation } from 'react-router-dom'
 
 const steps = [
-  { key: '1', label: 'Historical Promo Calendar' },
-  { key: '2', label: 'Insights' },
-  { key: '3', label: 'Promo Calendar' },
+  { key: '1', label: 'Historical Discount Calendar' },
+  { key: '2', label: 'Insights on price-off strategy' },
+  { key: '3', label: 'Optimize Discount Calendar' },
 ]
 
 const PromoStepTabs = ({ currentStep = '1' }) => {

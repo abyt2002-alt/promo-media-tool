@@ -14,9 +14,9 @@ import { useState } from 'react'
 const defaultNavigation = [
   { name: 'Home', href: '/', icon: Home },
   { name: 'Brand Ladder', href: '/portfolio?step=1', icon: BarChart3, step: '1' },
-  { name: 'Insights', href: '/portfolio?step=2', icon: SlidersHorizontal, step: '2' },
+  { name: 'Insights on price-off strategy', href: '/portfolio?step=2', icon: SlidersHorizontal, step: '2' },
   { name: 'Base Ladder Detection', href: '/portfolio?step=3', icon: LineChart, step: '3' },
-  { name: 'Promo Calendar', href: '/portfolio?step=4', icon: CalendarDays, step: '4' },
+  { name: 'Optimize Discount Calendar', href: '/portfolio?step=4', icon: CalendarDays, step: '4' },
 ]
 
 const AppLayout = ({
