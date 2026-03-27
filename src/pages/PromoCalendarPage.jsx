@@ -13,6 +13,11 @@ const PROMO_SAVED_CALENDARS_MAX = 80
 let PROMO_PAGE_MEMORY_CACHE = null
 
 const formatPct = (value) => `${value >= 0 ? '+' : ''}${value.toFixed(1)}%`
+const formatImpactPct = (value) => {
+  const numeric = Number(value) || 0
+  if (Math.abs(numeric) < 1e-9) return '0%'
+  return `${numeric >= 0 ? '+' : ''}${numeric.toFixed(1)}%`
+}
 const formatInr = (value) => `INR ${new Intl.NumberFormat('en-IN', { maximumFractionDigits: 0 }).format(Math.round(Number(value) || 0))}`
 const formatInt = (value) => new Intl.NumberFormat('en-IN', { maximumFractionDigits: 0 }).format(Math.round(Number(value) || 0))
 const renderBarLabel = (props) => {
@@ -591,10 +596,10 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
     : (defaultRecalc?.product_impacts ?? defaultBaseProductImpacts ?? [])
   const selectedTotals = inScenarioMode
     ? (manualRecalc?.totals ?? selectedDetail?.totals ?? result?.selected_totals ?? zeroTotals)
-    : (defaultHasEdits ? (defaultRecalc?.totals ?? zeroTotals) : zeroTotals)
+    : (defaultHasEdits ? (defaultRecalc?.totals ?? zeroTotals) : (defaultBaseTotals ?? zeroTotals))
   const baseTotals = inScenarioMode
     ? (manualRecalc?.base_totals ?? result?.base_totals ?? zeroTotals)
-    : (defaultHasEdits ? (defaultBaseTotals ?? zeroTotals) : zeroTotals)
+    : (defaultHasEdits ? (defaultBaseTotals ?? zeroTotals) : (defaultBaseTotals ?? zeroTotals))
 
   useEffect(() => {
     if (page >= pageCount) {
@@ -1100,7 +1105,7 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
                   {previewImpactCards.map((item) => (
                     <div key={`preview-${item.label}`} className="rounded-lg border border-slate-200 bg-white px-4 py-3">
                       <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">{item.label}</p>
-                      <p className={`mt-1 text-3xl font-extrabold ${item.pct >= 0 ? 'text-[#047857]' : 'text-[#BE123C]'}`}>{formatPct(item.pct)}</p>
+                    <p className={`mt-1 text-3xl font-extrabold ${Math.abs(Number(item.pct) || 0) < 1e-9 ? 'text-slate-700' : (item.pct >= 0 ? 'text-[#047857]' : 'text-[#BE123C]')}`}>{formatImpactPct(item.pct)}</p>
                       <p className="mt-2 text-sm font-semibold text-slate-700">
                         {item.money ? formatInr(item.base) : formatInt(item.base)} {'->'} {item.money ? formatInr(item.next) : formatInt(item.next)}
                       </p>
@@ -1540,7 +1545,7 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
                 {impactCards.map((item) => (
                   <div key={item.label} className="rounded-lg border border-slate-200 bg-white px-4 py-3">
                     <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">{item.label}</p>
-                    <p className={`mt-1 text-4xl font-extrabold ${item.pct >= 0 ? 'text-[#047857]' : 'text-[#BE123C]'}`}>{formatPct(item.pct)}</p>
+                    <p className={`mt-1 text-4xl font-extrabold ${Math.abs(Number(item.pct) || 0) < 1e-9 ? 'text-slate-700' : (item.pct >= 0 ? 'text-[#047857]' : 'text-[#BE123C]')}`}>{formatImpactPct(item.pct)}</p>
                     <p className="mt-2 text-sm font-semibold text-slate-700">
                       {item.money ? formatInr(item.base) : formatInt(item.base)} {'->'} {item.money ? formatInr(item.next) : formatInt(item.next)}
                     </p>
@@ -1553,7 +1558,8 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <h3 className="text-xl font-bold text-slate-800">Edit Discount Calendar</h3>
-                  <p className="mt-1 text-xs font-medium text-slate-600">Click on a week (W1-W27) to set No Discount / 10% / 20% / 30% / 40%.</p>
+                  <p className="mt-1 text-xs font-medium text-slate-600">Calendar for Winter season 2026</p>
+                  <p className="mt-1 text-xs font-medium text-slate-600">Click on a week (W1-W27) to set No Discount / 10% / 20% / 30% / 40%</p>
                 </div>
                 <div className="flex items-center gap-2">
                   <button

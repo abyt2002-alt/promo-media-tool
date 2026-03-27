@@ -163,6 +163,35 @@ const HistoricalPromoCalendarPage = ({ layoutProps = {} }) => {
             </div>
           </div>
 
+          <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">AI Summary</p>
+            <div className="mt-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
+              <p className="font-semibold text-slate-800">Summary of Price-Off Strategy of the Brand - Winter Season 2025</p>
+              <ul className="mt-2 list-disc space-y-1 pl-5">
+                <li>
+                  <span className="font-semibold">Early season restraint:</span> Most price bands stay in low discount ranges
+                  (0-10%) during the first ~15-18 weeks, indicating a full-price sell-through focus.
+                </li>
+                <li>
+                  <span className="font-semibold">Mid-season stability:</span> Moderate, controlled discounting (10-20%)
+                  appears selectively in mid weeks, mainly for mid-tier price points.
+                </li>
+                <li>
+                  <span className="font-semibold">End-of-season spike:</span> Sharp increase in heavy discounting (&gt;30%)
+                  across almost all price groups in the final ~5-6 weeks.
+                </li>
+                <li>
+                  <span className="font-semibold">Premium protection early:</span> Higher price points (Rs799+) maintain
+                  minimal discounts longer, preserving brand value before markdowns.
+                </li>
+                <li>
+                  <span className="font-semibold">Entry-price volatility:</span> Lower price points (Rs249-Rs499) see earlier
+                  and more aggressive discounting, likely used to drive volume and inventory clearance.
+                </li>
+              </ul>
+            </div>
+          </div>
+
           <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-semibold text-slate-600">
             <span className="rounded border border-slate-200 bg-slate-100 px-2 py-0.5 text-slate-500">No Discount</span>
             <span className="rounded border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-emerald-700">1-10%</span>
@@ -211,7 +240,7 @@ const HistoricalPromoCalendarPage = ({ layoutProps = {} }) => {
                       <td className="sticky left-0 z-10 border-r border-slate-100 bg-white px-2 py-1.5 align-top">
                         <p className="text-sm font-bold text-slate-800">{formatInr(row.pricePoint)}</p>
                         <p className="text-[11px] font-medium text-slate-500">
-                          {formatInt(row.productCount)} products ∑ Avg {formatPct(row.avgDiscountPct)}
+                          {formatInt(row.productCount)} products ù Avg {formatPct(row.avgDiscountPct)}
                         </p>
                       </td>
                       {row.weeklyAvgDiscount.map((value, idx) => (
@@ -247,10 +276,10 @@ const HistoricalPromoCalendarPage = ({ layoutProps = {} }) => {
             <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
               <div>
                 <h4 className="text-lg font-bold text-slate-800">
-                  {formatInr(selectedCell.pricePoint)} ∑ {selectedWeekLabel}
+                  {formatInr(selectedCell.pricePoint)} ù {selectedWeekLabel}
                 </h4>
                 <p className="text-xs font-medium text-slate-600">
-                  Raw Week: {selectedWeekNumber ?? '-'} ∑ Products: {selectedGroupProducts.length}
+                  Raw Week: {selectedWeekNumber ?? '-'} ù Products: {selectedGroupProducts.length}
                 </p>
               </div>
               <button

@@ -1,14 +1,34 @@
 import { useEffect, useMemo, useState } from 'react'
-import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
+import { CartesianGrid, Line, LineChart, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis, ZAxis } from 'recharts'
 import { Loader2 } from 'lucide-react'
 import AppLayout from '../components/layout/AppLayout'
-import { getPromoElasticityInsights } from '../services/promoCalendarApi'
+import { getHistoricalPromoCalendar, getPromoElasticityInsights } from '../services/promoCalendarApi'
+
+const HISTORICAL_CACHE_KEY = 'promo_historical_calendar_cache_v1'
 
 const SEGMENTS = [
   { key: 'daily', label: 'Daily Casual', range: '<= 599', color: '#2563EB', tint: 'bg-blue-50 border-blue-200' },
   { key: 'core', label: 'Core Plus', range: '600 - 899', color: '#F97316', tint: 'bg-orange-50 border-orange-200' },
   { key: 'premium', label: 'Premium', range: '>= 900', color: '#16A34A', tint: 'bg-emerald-50 border-emerald-200' },
 ]
+
+const SEGMENT_TILE_TINT = {
+  daily: 'border-blue-100 bg-blue-50/70',
+  core: 'border-orange-100 bg-orange-50/70',
+  premium: 'border-emerald-100 bg-emerald-50/70',
+}
+
+const SEGMENT_CARD_TINT = {
+  daily: 'border-blue-200 bg-blue-50/70',
+  core: 'border-orange-200 bg-orange-50/70',
+  premium: 'border-emerald-200 bg-emerald-50/70',
+}
+
+const SEGMENT_SKU_LABEL = {
+  daily: '8 SKUs',
+  core: '9 SKUs',
+  premium: '6 SKUs',
+}
 
 const formatInr = (value) => `INR ${new Intl.NumberFormat('en-IN', { maximumFractionDigits: 0 }).format(Math.round(Number(value) || 0))}`
 
@@ -40,6 +60,7 @@ const buildLinearizedElasticity = (baseElasticity, elasticity40) => {
 
 const PromoElasticityInsightsPage = ({ layoutProps = {} }) => {
   const [data, setData] = useState(null)
+  const [historicalData, setHistoricalData] = useState(null)
   const [selectedSegment, setSelectedSegment] = useState('daily')
   const [selectedProductName, setSelectedProductName] = useState('')
   const [loading, setLoading] = useState(false)
@@ -49,8 +70,27 @@ const PromoElasticityInsightsPage = ({ layoutProps = {} }) => {
     setLoading(true)
     setError('')
     try {
-      const response = await getPromoElasticityInsights({})
-      setData(response)
+      let cachedHistorical = null
+      if (typeof window !== 'undefined') {
+        try {
+          const raw = sessionStorage.getItem(HISTORICAL_CACHE_KEY)
+          if (raw) {
+            const parsed = JSON.parse(raw)
+            if (parsed && Array.isArray(parsed.products)) {
+              cachedHistorical = parsed
+            }
+          }
+        } catch {
+          // ignore cache parse issues
+        }
+      }
+
+      const [insightsResponse, historicalResponse] = await Promise.all([
+        getPromoElasticityInsights({}),
+        cachedHistorical ? Promise.resolve(cachedHistorical) : getHistoricalPromoCalendar({}),
+      ])
+      setData(insightsResponse)
+      setHistoricalData(historicalResponse)
     } catch (err) {
       setError(err?.message || 'Failed to load promo insights.')
     } finally {
@@ -77,6 +117,28 @@ const PromoElasticityInsightsPage = ({ layoutProps = {} }) => {
     })
   }, [data])
 
+  const historicalSegmentDiscountMap = useMemo(() => {
+    const rows = historicalData?.products ?? []
+    if (!rows.length) return {}
+    const grouped = rows.reduce((acc, row) => {
+      const segmentKey = getSegmentKey(row.base_price)
+      const volume = Math.max(0, Number(row.total_volume ?? 0))
+      const avgDiscount = Number(row.avg_discount_pct ?? 0)
+      if (!acc[segmentKey]) {
+        acc[segmentKey] = { weightedDiscountSum: 0, volume: 0 }
+      }
+      acc[segmentKey].weightedDiscountSum += avgDiscount * volume
+      acc[segmentKey].volume += volume
+      return acc
+    }, {})
+    return Object.fromEntries(
+      Object.entries(grouped).map(([key, value]) => [
+        key,
+        value.volume > 0 ? value.weightedDiscountSum / value.volume : 0,
+      ]),
+    )
+  }, [historicalData])
+
   const segmentSummaries = useMemo(() => {
     return SEGMENTS.map((segment) => {
       const rows = productsWithSegment.filter((row) => row.segmentKey === segment.key)
@@ -87,6 +149,7 @@ const PromoElasticityInsightsPage = ({ layoutProps = {} }) => {
       const avgPromo20 = count
         ? rows.reduce((sum, row) => sum + Number(row.elasticity_20_view || 0), 0) / count
         : 0
+      const avgDiscountPct = Number(historicalSegmentDiscountMap[segment.key] ?? 0)
       const weighted = rows.reduce(
         (acc, row) => {
           const weightRaw = Number(row.total_volume ?? row.current_volume ?? 1)
@@ -110,10 +173,11 @@ const PromoElasticityInsightsPage = ({ layoutProps = {} }) => {
         count,
         avgBase,
         avgPromo20,
+        avgDiscountPct,
         avgDiscountEls,
       }
     })
-  }, [productsWithSegment])
+  }, [historicalSegmentDiscountMap, productsWithSegment])
 
   useEffect(() => {
     if (!productsWithSegment.length) return
@@ -168,6 +232,57 @@ const PromoElasticityInsightsPage = ({ layoutProps = {} }) => {
 
   const activeSegmentConfig = SEGMENTS.find((segment) => segment.key === selectedSegment) ?? SEGMENTS[0]
 
+  const contributionScatterData = useMemo(() => {
+    const rows = historicalData?.products ?? []
+    if (!rows.length) return []
+
+    const totalsByPricePoint = rows.reduce((acc, row) => {
+      const pricePoint = Math.round(Number(row.base_price ?? 0))
+      const totalVolume = Number(row.total_volume ?? 0)
+      const basePrice = Number(row.base_price ?? 0)
+      const avgDiscount = Number(row.avg_discount_pct ?? 0)
+      const revenueProxy = Math.max(0, basePrice * Math.max(0, totalVolume))
+      if (!acc[pricePoint]) {
+        acc[pricePoint] = {
+          sales: 0,
+          weightedDiscountSum: 0,
+          volume: 0,
+          skuCount: 0,
+        }
+      }
+      acc[pricePoint].sales += revenueProxy
+      acc[pricePoint].weightedDiscountSum += avgDiscount * Math.max(0, totalVolume)
+      acc[pricePoint].volume += Math.max(0, totalVolume)
+      acc[pricePoint].skuCount += 1
+      return acc
+    }, {})
+
+    const totalSales = Math.max(
+      1e-6,
+      Object.values(totalsByPricePoint).reduce((sum, item) => sum + Number(item?.sales || 0), 0),
+    )
+
+    return Object.entries(totalsByPricePoint)
+      .map(([pricePointKey, bucket]) => {
+      const pricePoint = Number(pricePointKey)
+      const avgDiscountPct = bucket.volume > 0 ? bucket.weightedDiscountSum / bucket.volume : 0
+      const salesContributionPct = (bucket.sales / totalSales) * 100
+      const segment = SEGMENTS.find((item) => item.key === getSegmentKey(pricePoint)) ?? SEGMENTS[0]
+      return {
+        pricePoint,
+        segmentLabel: segment.label,
+        x: pricePoint,
+        y: Number(avgDiscountPct.toFixed(2)),
+        z: Number(salesContributionPct.toFixed(2)),
+        salesContributionPct: Number(salesContributionPct.toFixed(2)),
+        color: segment.color,
+        skuCount: bucket.skuCount,
+      }
+    })
+      .filter((item) => item.skuCount > 0)
+      .sort((a, b) => a.pricePoint - b.pricePoint)
+  }, [historicalData])
+
   return (
     <AppLayout {...layoutProps}>
       <div className="space-y-6">
@@ -194,6 +309,8 @@ const PromoElasticityInsightsPage = ({ layoutProps = {} }) => {
             <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-3">
               {segmentSummaries.map((segment) => {
                 const active = selectedSegment === segment.key
+                const tileTint = SEGMENT_TILE_TINT[segment.key] ?? 'border-slate-200 bg-slate-50/70'
+                const cardTint = SEGMENT_CARD_TINT[segment.key] ?? 'border-slate-200 bg-slate-50/70'
                 return (
                   <button
                     key={segment.key}
@@ -201,10 +318,10 @@ const PromoElasticityInsightsPage = ({ layoutProps = {} }) => {
                     onClick={() => setSelectedSegment(segment.key)}
                     className={`group rounded-xl border p-4 text-left transition-all duration-200 ${
                       active
-                        ? `${segment.tint} shadow-sm ring-2 ring-offset-0`
-                        : 'border-slate-200 bg-white hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-sm'
+                        ? `${cardTint} border-2 shadow-sm ring-0`
+                        : `${cardTint} hover:-translate-y-0.5 hover:shadow-sm`
                     }`}
-                    style={active ? { borderColor: segment.color, boxShadow: `inset 0 0 0 1px ${segment.color}22` } : undefined}
+                    style={active ? { borderColor: segment.color, boxShadow: `inset 0 0 0 1px ${segment.color}33` } : undefined}
                   >
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-2">
@@ -212,22 +329,25 @@ const PromoElasticityInsightsPage = ({ layoutProps = {} }) => {
                           className="inline-block h-2.5 w-2.5 rounded-full"
                           style={{ backgroundColor: segment.color }}
                         />
-                        <p className="text-sm font-bold text-slate-800">{segment.label}</p>
+                        <p className="text-sm font-bold text-slate-800">
+                          {segment.label}{' '}
+                          <span className="font-medium text-slate-500">({SEGMENT_SKU_LABEL[segment.key] ?? `${segment.count} SKUs`})</span>
+                        </p>
                       </div>
                       <span className="rounded-full border border-slate-200 bg-white/80 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-slate-600">
                         {segment.range}
                       </span>
                     </div>
                     <div className="mt-3 grid grid-cols-3 gap-2 text-[11px]">
-                      <div className="rounded-lg border border-slate-200/80 bg-white/80 px-2 py-1.5">
-                        <p className="font-semibold uppercase tracking-wide text-slate-500">SKUs</p>
-                        <p className="mt-0.5 text-base font-extrabold text-slate-800">{segment.count}</p>
+                      <div className={`rounded-lg border px-2 py-1.5 ${tileTint}`}>
+                        <p className="font-semibold uppercase tracking-wide text-slate-500">Avg Discount %</p>
+                        <p className="mt-0.5 text-base font-extrabold text-slate-800">{toFixed2(segment.avgDiscountPct)}%</p>
                       </div>
-                      <div className="rounded-lg border border-slate-200/80 bg-white/80 px-2 py-1.5">
+                      <div className={`rounded-lg border px-2 py-1.5 ${tileTint}`}>
                         <p className="font-semibold uppercase tracking-wide text-slate-500">Base Price Els</p>
                         <p className="mt-0.5 text-base font-extrabold text-slate-800">{toFixed2(segment.avgBase)}</p>
                       </div>
-                      <div className="rounded-lg border border-slate-200/80 bg-white/80 px-2 py-1.5">
+                      <div className={`rounded-lg border px-2 py-1.5 ${tileTint}`}>
                         <p className="font-semibold uppercase tracking-wide text-slate-500">Avg Discount ELS</p>
                         <p className="mt-0.5 text-base font-extrabold text-slate-800">{toFixed2(segment.avgDiscountEls)}</p>
                       </div>
@@ -238,6 +358,93 @@ const PromoElasticityInsightsPage = ({ layoutProps = {} }) => {
             </div>
           )}
         </div>
+
+        {!loading && !error && (
+          <div className="panel p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-base font-bold text-slate-800">Contribution to Sales vs Average Discount</h3>
+              <p className="text-xs font-medium text-slate-600">Bubble size reflects Sales Contribution % by price point</p>
+            </div>
+            <div className="mt-3 h-72 rounded-lg border border-slate-200 bg-white p-2">
+              <ResponsiveContainer width="100%" height="100%">
+                <ScatterChart margin={{ top: 12, right: 16, left: 10, bottom: 8 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" />
+                  <XAxis
+                    type="number"
+                    dataKey="x"
+                    name="Base Price (INR)"
+                    tick={{ fontSize: 11, fontWeight: 700, fill: '#0F172A' }}
+                    tickFormatter={(value) => `${Math.round(Number(value) || 0)}`}
+                    label={{ value: 'Base Price (INR)', position: 'insideBottom', offset: -4, fill: '#475569', fontSize: 11 }}
+                  />
+                  <YAxis
+                    type="number"
+                    dataKey="y"
+                    name="Avg Discount %"
+                    unit="%"
+                    tick={{ fontSize: 11, fontWeight: 700, fill: '#0F172A' }}
+                    label={{ value: 'Average Discount %', angle: -90, position: 'insideLeft', fill: '#475569', fontSize: 11 }}
+                  />
+                  <ZAxis type="number" dataKey="z" range={[120, 760]} name="Sales Contribution %" />
+                  <Tooltip
+                    cursor={{ strokeDasharray: '4 4' }}
+                    formatter={(value, name) => {
+                      if (name === 'Avg Discount %' || name === 'Sales Contribution %') {
+                        return [`${Number(value).toFixed(2)}%`, name]
+                      }
+                      if (name === 'Base Price (INR)') {
+                        return [formatInr(Number(value) || 0), name]
+                      }
+                      return [value, name]
+                    }}
+                    content={({ active, payload }) => {
+                      if (!active || !payload?.length) return null
+                      const row = payload[0]?.payload
+                      if (!row) return null
+                      return (
+                        <div className="rounded-lg border border-slate-200 bg-white p-3 shadow-lg">
+                          <p className="text-sm font-bold text-slate-800">Price Point: {formatInr(row.pricePoint)}</p>
+                          <p className="mt-1 text-xs font-medium text-slate-600">Avg Discount: {row.y.toFixed(2)}%</p>
+                          <p className="text-xs font-medium text-slate-600">Sales Contribution: {row.salesContributionPct.toFixed(2)}%</p>
+                          <p className="text-xs font-medium text-slate-600">SKUs: {row.skuCount}</p>
+                        </div>
+                      )
+                    }}
+                  />
+                  <Scatter data={contributionScatterData} shape={(props) => {
+                    const { cx, cy, payload, size } = props
+                    const radius = Math.sqrt(Number(size || 220)) / 2.2
+                    const fillColor = payload?.color || '#2563EB'
+                    return (
+                      <g>
+                        <circle
+                          cx={cx}
+                          cy={cy}
+                          r={radius}
+                          fill={fillColor}
+                          fillOpacity={0.7}
+                          stroke={fillColor}
+                          strokeWidth={2}
+                        />
+                        <text
+                          x={Number(cx)}
+                          y={Number(cy) - radius - 6}
+                          textAnchor="middle"
+                          fontSize="10"
+                          fontWeight="700"
+                          fill="#0F172A"
+                        >
+                          {Math.round(Number(payload?.pricePoint || 0))}
+                        </text>
+                      </g>
+                    )
+                  }}
+                  />
+                </ScatterChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        )}
 
         {!loading && !error && (
           <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
