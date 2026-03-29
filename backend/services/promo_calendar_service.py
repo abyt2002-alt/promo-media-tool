@@ -23,6 +23,7 @@ from backend.schemas.promo_calendar import (
     PromoElasticityInsightsResponse,
     PromoHistoricalProductRow,
     PromoHistoricalResponse,
+    PromoHistoricalSummaryResponse,
     PromoPortfolioTotals,
     PromoProductImpact,
     PromoScenarioDetail,
@@ -1657,6 +1658,260 @@ def _point_elasticity_series(
         values.append(elasticity)
 
     return float(values[0]), float(values[1]), float(values[2]), float(values[3]), float(values[4])
+
+
+def _build_historical_group_aggregates(
+    products: list[PromoHistoricalProductRow],
+    weeks: list[int],
+) -> list[dict[str, Any]]:
+    by_price: dict[int, dict[str, Any]] = {}
+    week_count = len(weeks)
+    for row in products:
+        price_point = int(round(float(row.base_price)))
+        bucket = by_price.setdefault(
+            price_point,
+            {
+                "price_point": price_point,
+                "product_count": 0,
+                "total_volume": 0.0,
+                "weighted_avg_discount_num": 0.0,
+                "weekly_discount_num": [0.0] * week_count,
+                "weekly_discount_den": [0.0] * week_count,
+            },
+        )
+        volume = max(0.0, float(row.total_volume))
+        avg_discount = max(0.0, float(row.avg_discount_pct))
+        bucket["product_count"] += 1
+        bucket["total_volume"] += volume
+        bucket["weighted_avg_discount_num"] += avg_discount * volume
+
+        weekly = list(row.weekly_discount_pct or [])
+        for idx in range(week_count):
+            discount = max(0.0, float(weekly[idx])) if idx < len(weekly) else 0.0
+            bucket["weekly_discount_num"][idx] += discount * volume
+            bucket["weekly_discount_den"][idx] += volume
+
+    rows: list[dict[str, Any]] = []
+    for price_point, bucket in by_price.items():
+        total_volume = float(bucket["total_volume"])
+        avg_discount_pct = (
+            float(bucket["weighted_avg_discount_num"]) / total_volume if total_volume > 1e-9 else 0.0
+        )
+        weekly_avg_discount: list[float] = []
+        for idx in range(week_count):
+            den = float(bucket["weekly_discount_den"][idx])
+            num = float(bucket["weekly_discount_num"][idx])
+            weekly_avg_discount.append((num / den) if den > 1e-9 else 0.0)
+        rows.append(
+            {
+                "price_point": int(price_point),
+                "product_count": int(bucket["product_count"]),
+                "total_volume": total_volume,
+                "avg_discount_pct": avg_discount_pct,
+                "weekly_avg_discount": weekly_avg_discount,
+            }
+        )
+
+    rows.sort(key=lambda item: (item["price_point"], item["product_count"]))
+    return rows
+
+
+def _window_bounds(week_count: int) -> tuple[tuple[int, int], tuple[int, int], tuple[int, int]]:
+    if week_count <= 0:
+        return (0, 0), (0, 0), (0, 0)
+    early_end = max(1, int(round(week_count * 0.56)))
+    mid_end = max(early_end + 1, int(round(week_count * 0.81)))
+    early_end = min(early_end, week_count)
+    mid_end = min(mid_end, week_count)
+    return (0, early_end), (early_end, mid_end), (mid_end, week_count)
+
+
+def _mean_window(values: list[float], start: int, end: int) -> float:
+    if start >= end or not values:
+        return 0.0
+    window = values[start:end]
+    if not window:
+        return 0.0
+    return float(sum(window) / len(window))
+
+
+def _weighted_window_average(group_rows: list[dict[str, Any]], start: int, end: int) -> float:
+    num = 0.0
+    den = 0.0
+    for row in group_rows:
+        weight = max(1.0, float(row.get("total_volume", 0.0)))
+        avg = _mean_window(list(row.get("weekly_avg_discount", [])), start, end)
+        num += avg * weight
+        den += weight
+    return (num / den) if den > 1e-9 else 0.0
+
+
+def _weighted_segment_average(
+    group_rows: list[dict[str, Any]],
+    predicate: Callable[[int], bool],
+) -> float:
+    num = 0.0
+    den = 0.0
+    for row in group_rows:
+        price_point = int(row.get("price_point", 0))
+        if not predicate(price_point):
+            continue
+        weight = max(1.0, float(row.get("total_volume", 0.0)))
+        num += float(row.get("avg_discount_pct", 0.0)) * weight
+        den += weight
+    return (num / den) if den > 1e-9 else 0.0
+
+
+def _build_historical_summary_prompt(summary_payload: dict[str, Any]) -> str:
+    return (
+        "You are a pricing strategy analyst.\n"
+        "Generate one concise heading and exactly 5 business bullets from the historical promo calendar data.\n"
+        "Return strict JSON only in this schema:\n"
+        "{\n"
+        '  "title": "string",\n'
+        '  "bullets": ["string", "string", "string", "string", "string"]\n'
+        "}\n"
+        "Rules:\n"
+        "- Keep language executive-friendly.\n"
+        '- Every bullet must follow this exact style: "Short Heading: One concise explanation sentence."\n'
+        "- Mention season pattern (early/mid/late), premium vs entry behavior, and concentration of heavy discounts.\n"
+        "- No markdown, no numbering, no extra keys.\n"
+        f"Data:\n{json.dumps(summary_payload, ensure_ascii=False)}"
+    )
+
+
+def _normalize_summary_bullet_text(bullets: list[str]) -> list[str]:
+    default_heads = [
+        "Season Escalation",
+        "Entry Price Group Role",
+        "Premium Price Protection",
+        "Late-Phase Intensity",
+        "Mid-Phase Ramp-Up",
+    ]
+    normalized: list[str] = []
+    for idx, raw in enumerate(bullets[:5]):
+        text = str(raw or "").strip().replace("\n", " ")
+        if not text:
+            continue
+        if ":" in text:
+            lead, tail = text.split(":", 1)
+            lead = " ".join(lead.split()).strip(" -")
+            tail = " ".join(tail.split()).strip()
+            if lead and tail:
+                normalized.append(f"{lead}: {tail}")
+                continue
+        heading = default_heads[idx] if idx < len(default_heads) else f"Key Point {idx + 1}"
+        normalized.append(f"{heading}: {' '.join(text.split())}")
+    return normalized[:5]
+
+
+def _sanitize_historical_summary_payload(payload: dict[str, Any] | None) -> tuple[str, list[str]] | None:
+    if not isinstance(payload, dict):
+        return None
+    title = str(payload.get("title") or "").strip()
+    raw_bullets = payload.get("bullets")
+    if not isinstance(raw_bullets, list):
+        return None
+    bullets = _normalize_summary_bullet_text([str(item).strip() for item in raw_bullets if str(item).strip()])
+    if not title or len(bullets) < 5:
+        return None
+    return title, bullets[:5]
+
+
+def _build_fallback_historical_summary(
+    *,
+    selected_year: int,
+    group_rows: list[dict[str, Any]],
+    weeks: list[int],
+) -> tuple[str, list[str]]:
+    if not group_rows:
+        return (
+            f"Summary of Price-Off Strategy - {selected_year}",
+            [
+                "Historical promo rows were not available for this selection.",
+                "No weekly discount pattern could be derived for the current product scope.",
+                "Try refreshing data or checking the source file scope mapping.",
+                "Entry and premium segment behavior is unavailable in this run.",
+                "Use a wider source scope to generate a complete strategy summary.",
+            ],
+        )
+
+    (early_start, early_end), (mid_start, mid_end), (late_start, late_end) = _window_bounds(len(weeks))
+    early_avg = _weighted_window_average(group_rows, early_start, early_end)
+    mid_avg = _weighted_window_average(group_rows, mid_start, mid_end)
+    late_avg = _weighted_window_average(group_rows, late_start, late_end)
+    entry_avg = _weighted_segment_average(group_rows, lambda price: price <= 499)
+    premium_avg = _weighted_segment_average(group_rows, lambda price: price >= 799)
+
+    max_group = max(group_rows, key=lambda row: float(row.get("avg_discount_pct", 0.0)))
+    min_group = min(group_rows, key=lambda row: float(row.get("avg_discount_pct", 0.0)))
+
+    title = f"Summary of Price-Off Strategy - {selected_year}"
+    bullets = [
+        (
+            f"Early season restraint: weighted discount averages stay around {early_avg:.1f}% in the first "
+            f"{max(0, early_end - early_start)} weeks."
+        ),
+        (
+            f"Mid-season stability: discount intensity moves to {mid_avg:.1f}% during the middle "
+            f"{max(0, mid_end - mid_start)} weeks."
+        ),
+        (
+            f"End-of-season spike: late window discounting reaches {late_avg:.1f}% "
+            f"(+{(late_avg - early_avg):.1f} pts vs early period)."
+        ),
+        (
+            f"Premium vs entry: premium bands average {premium_avg:.1f}% while entry bands average {entry_avg:.1f}%."
+        ),
+        (
+            f"Price-group concentration: highest average discount is around INR {int(max_group['price_point'])} "
+            f"({float(max_group['avg_discount_pct']):.1f}%), while the lowest is around INR {int(min_group['price_point'])} "
+            f"({float(min_group['avg_discount_pct']):.1f}%)."
+        ),
+    ]
+    return title, bullets
+
+
+def get_historical_promo_summary(
+    selected_year: int | None = None,
+    selected_channel: str | None = None,
+) -> PromoHistoricalSummaryResponse:
+    historical = get_historical_promo_calendar(selected_year=selected_year, selected_channel=selected_channel)
+    group_rows = _build_historical_group_aggregates(historical.products, historical.weeks)
+    fallback_title, fallback_bullets = _build_fallback_historical_summary(
+        selected_year=historical.selected_year,
+        group_rows=group_rows,
+        weeks=historical.weeks,
+    )
+
+    if not group_rows:
+        return PromoHistoricalSummaryResponse(source="fallback", title=fallback_title, bullets=fallback_bullets)
+
+    (early_start, early_end), (mid_start, mid_end), (late_start, late_end) = _window_bounds(len(historical.weeks))
+    prompt_payload = {
+        "selected_year": historical.selected_year,
+        "selected_channel": historical.selected_channel,
+        "weeks_count": len(historical.weeks),
+        "price_groups": [
+            {
+                "price_point": int(row["price_point"]),
+                "products": int(row["product_count"]),
+                "avg_discount_pct": round(float(row["avg_discount_pct"]), 2),
+                "early_avg_pct": round(_mean_window(list(row["weekly_avg_discount"]), early_start, early_end), 2),
+                "mid_avg_pct": round(_mean_window(list(row["weekly_avg_discount"]), mid_start, mid_end), 2),
+                "late_avg_pct": round(_mean_window(list(row["weekly_avg_discount"]), late_start, late_end), 2),
+            }
+            for row in group_rows
+        ],
+    }
+
+    gemini_payload = _call_gemini_json(_build_historical_summary_prompt(prompt_payload), temperature=0.15, timeout_seconds=35)
+    parsed = _sanitize_historical_summary_payload(gemini_payload)
+    if parsed is None:
+        return PromoHistoricalSummaryResponse(source="fallback", title=fallback_title, bullets=fallback_bullets)
+
+    title, bullets = parsed
+    return PromoHistoricalSummaryResponse(source="gemini", title=title, bullets=bullets)
 
 
 def get_historical_promo_calendar(

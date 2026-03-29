@@ -12,10 +12,12 @@ from backend.schemas.promo_calendar import (
     PromoCalendarRequest,
     PromoCalendarResponse,
     PromoHistoricalResponse,
+    PromoHistoricalSummaryResponse,
 )
 from backend.services.promo_calendar_jobs import create_promo_calendar_job, get_promo_calendar_job
 from backend.services.promo_calendar_service import (
     get_historical_promo_calendar,
+    get_historical_promo_summary,
     get_promo_elasticity_insights,
     optimize_promo_calendar,
     recalculate_promo_calendar,
@@ -33,6 +35,16 @@ def historical_promo_calendar(year: int | None = None, channel: str | None = Non
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # pragma: no cover - defensive
         raise HTTPException(status_code=500, detail=f"Failed to load historical promo calendar: {exc}") from exc
+
+
+@router.get("/historical-summary", response_model=PromoHistoricalSummaryResponse)
+def historical_promo_summary(year: int | None = None, channel: str | None = None) -> PromoHistoricalSummaryResponse:
+    try:
+        return get_historical_promo_summary(selected_year=year, selected_channel=channel)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover - defensive
+        raise HTTPException(status_code=500, detail=f"Failed to generate historical promo summary: {exc}") from exc
 
 
 @router.get("/insights", response_model=PromoElasticityInsightsResponse)

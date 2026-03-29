@@ -55,6 +55,18 @@ export const getHistoricalPromoCalendar = async ({ year, channel } = {}) => {
   return response.json()
 }
 
+export const getHistoricalPromoSummary = async ({ year, channel } = {}) => {
+  const params = new URLSearchParams()
+  if (year != null && String(year).trim() !== '') params.set('year', String(year))
+  if (channel != null && String(channel).trim() !== '') params.set('channel', String(channel))
+  const query = params.toString()
+  const response = await fetch(`/api/promo-calendar/historical-summary${query ? `?${query}` : ''}`)
+  if (!response.ok) {
+    throw new Error(await parseApiError(response))
+  }
+  return response.json()
+}
+
 export const getPromoElasticityInsights = async ({ year, channel } = {}) => {
   const params = new URLSearchParams()
   if (year != null && String(year).trim() !== '') params.set('year', String(year))

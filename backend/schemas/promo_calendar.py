@@ -158,6 +158,12 @@ class PromoHistoricalResponse(BaseModel):
     products: list[PromoHistoricalProductRow]
 
 
+class PromoHistoricalSummaryResponse(BaseModel):
+    source: Literal["gemini", "fallback"]
+    title: str
+    bullets: list[str]
+
+
 class PromoElasticityInsightRow(BaseModel):
     product_name: str
     brand: int
