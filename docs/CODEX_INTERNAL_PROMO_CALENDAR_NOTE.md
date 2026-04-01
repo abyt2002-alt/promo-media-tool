@@ -40,6 +40,7 @@ This standalone app was created from the earlier **pricing demo tool** work, spe
 - If optional fields are missing:
   - `Base Volume` fallback = computed from model conversion pipeline
   - `Month` fallback = latest available month in backend dataset
+  
 
 ### Elasticity/model flow (exact)
 For each run:
