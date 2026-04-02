@@ -1,4 +1,5 @@
 import { CalendarDays, LineChart, SlidersHorizontal } from 'lucide-react'
+import { useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import HistoricalPromoCalendarPage from './HistoricalPromoCalendarPage'
 import PromoElasticityInsightsPage from './PromoElasticityInsightsPage'
@@ -17,6 +18,10 @@ const PromoCalendarOptimisationApp = () => {
     appTitle: 'Consumer Price-Off Optimization',
     navigationItems: standaloneNavigation,
   }
+
+  useEffect(() => {
+    document.title = 'Consumer Price-Off Optimization'
+  }, [])
 
   if (step === '2') {
     return <PromoElasticityInsightsPage layoutProps={layoutProps} />

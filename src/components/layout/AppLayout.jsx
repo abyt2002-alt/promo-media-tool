@@ -22,7 +22,7 @@ const defaultNavigation = [
 const AppLayout = ({
   children,
   rightSidebar,
-  appTitle = 'Price Ladder Optimization',
+  appTitle = 'Consumer Price-Off Optimization',
   navigationItems = defaultNavigation,
 }) => {
   const location = useLocation()
