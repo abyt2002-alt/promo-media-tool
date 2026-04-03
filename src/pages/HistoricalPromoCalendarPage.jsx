@@ -1,10 +1,9 @@
 ﻿import { useEffect, useMemo, useState } from 'react'
-import { CalendarDays, Loader2 } from 'lucide-react'
+import { CalendarDays, Loader2, Sparkles } from 'lucide-react'
 import AppLayout from '../components/layout/AppLayout'
 import { getHistoricalPromoCalendar, getHistoricalPromoSummary } from '../services/promoCalendarApi'
 
 const HISTORICAL_CACHE_KEY = 'promo_historical_calendar_cache_v1'
-const HISTORICAL_SUMMARY_CACHE_KEY = 'promo_historical_calendar_summary_cache_v1'
 
 const formatPct = (value) => `${value >= 0 ? '+' : ''}${value.toFixed(1)}%`
 const formatInr = (value) => `INR ${new Intl.NumberFormat('en-IN', { maximumFractionDigits: 0 }).format(Math.round(Number(value) || 0))}`
@@ -36,29 +35,37 @@ const HistoricalPromoCalendarPage = ({ layoutProps = {} }) => {
   const [data, setData] = useState(null)
   const [summary, setSummary] = useState(null)
   const [summaryLoading, setSummaryLoading] = useState(false)
+  const [summaryError, setSummaryError] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [selectedCell, setSelectedCell] = useState(null)
 
   const loadData = async () => {
     setLoading(true)
-    setSummaryLoading(true)
     setError('')
     try {
-      const [calendarResponse, summaryResponse] = await Promise.all([
-        getHistoricalPromoCalendar(),
-        getHistoricalPromoSummary(),
-      ])
+      const calendarResponse = await getHistoricalPromoCalendar()
       setData(calendarResponse)
-      setSummary(summaryResponse)
       if (typeof window !== 'undefined') {
         sessionStorage.setItem(HISTORICAL_CACHE_KEY, JSON.stringify(calendarResponse))
-        sessionStorage.setItem(HISTORICAL_SUMMARY_CACHE_KEY, JSON.stringify(summaryResponse))
       }
     } catch (err) {
       setError(err?.message || 'Failed to load historical promo calendar.')
     } finally {
       setLoading(false)
+    }
+  }
+
+  const loadSummary = async () => {
+    setSummaryLoading(true)
+    setSummaryError('')
+    try {
+      const summaryResponse = await getHistoricalPromoSummary()
+      setSummary(summaryResponse)
+    } catch (err) {
+      setSummary(null)
+      setSummaryError(err?.message || 'Failed to generate AI summary.')
+    } finally {
       setSummaryLoading(false)
     }
   }
@@ -67,17 +74,10 @@ const HistoricalPromoCalendarPage = ({ layoutProps = {} }) => {
     if (typeof window !== 'undefined') {
       try {
         const cached = sessionStorage.getItem(HISTORICAL_CACHE_KEY)
-        const cachedSummary = sessionStorage.getItem(HISTORICAL_SUMMARY_CACHE_KEY)
         if (cached) {
           const parsed = JSON.parse(cached)
           if (parsed && Array.isArray(parsed.products)) {
             setData(parsed)
-          }
-        }
-        if (cachedSummary) {
-          const parsedSummary = JSON.parse(cachedSummary)
-          if (parsedSummary && typeof parsedSummary.title === 'string' && Array.isArray(parsedSummary.bullets)) {
-            setSummary(parsedSummary)
           }
         }
       } catch {
@@ -192,12 +192,27 @@ const HistoricalPromoCalendarPage = ({ layoutProps = {} }) => {
           </div>
 
           <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">AI Summary</p>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">AI Summary</p>
+              <button
+                type="button"
+                onClick={loadSummary}
+                disabled={summaryLoading || loading || !data}
+                className="inline-flex items-center gap-2 rounded-md bg-[#2563EB] px-3 py-1.5 text-xs font-semibold text-white hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {summaryLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                {summary ? 'Regenerate AI Summary' : 'Generate AI Summary'}
+              </button>
+            </div>
             <div className="mt-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
               {summaryLoading && !summary ? (
                 <div className="flex items-center gap-2 text-xs font-semibold text-slate-500">
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   Generating summary...
+                </div>
+              ) : summaryError ? (
+                <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">
+                  {summaryError}
                 </div>
               ) : summary ? (
                 <>
@@ -212,7 +227,9 @@ const HistoricalPromoCalendarPage = ({ layoutProps = {} }) => {
                   </p>
                 </>
               ) : (
-                <p className="text-xs text-slate-500">Summary unavailable for current data scope.</p>
+                <p className="text-xs text-slate-500">
+                  Click <span className="font-semibold text-slate-700">Generate AI Summary</span> to create a summary for the current historical discount calendar.
+                </p>
               )}
             </div>
           </div>

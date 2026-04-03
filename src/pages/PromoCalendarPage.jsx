@@ -10,6 +10,11 @@ const PROMO_LEVEL_OPTIONS = [0, 10, 20, 30, 40]
 const PROMO_PAGE_CACHE_KEY = 'promo_calendar_page_state_v2'
 const PROMO_SAVED_CALENDARS_KEY = 'promo_saved_calendars_v1'
 const PROMO_SAVED_CALENDARS_MAX = 80
+const IMPACT_BASELINE_SHIFT = {
+  volumePct: -1,
+  revenuePct: -0.5,
+  profitPct: 0,
+}
 let PROMO_PAGE_MEMORY_CACHE = null
 
 const formatPct = (value) => `${value >= 0 ? '+' : ''}${value.toFixed(1)}%`
@@ -64,6 +69,13 @@ const downloadFile = (content, fileName, mimeType = 'text/csv;charset=utf-8;') =
 }
 
 const escapeCsv = (value) => `"${String(value ?? '').replaceAll('"', '""')}"`
+const toMultiplier = (pct) => 1 + (Number(pct) || 0) / 100
+const applyBaselineShift = (baseValue, rawNextValue, baselinePct) => {
+  const base = Number(baseValue) || 0
+  const rawNext = Number(rawNextValue) || 0
+  if (Math.abs(base) <= 1e-9) return rawNext
+  return base * toMultiplier(baselinePct) * (rawNext / base)
+}
 
 const buildCalendarRows = (entry) => {
   const rows = []
@@ -805,19 +817,26 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
       { base: 0, next: 0 },
     )
 
+    const volumeBase = Number(baseTotalsInput?.total_volume ?? 0)
+    const volumeNextRaw = Number(selectedTotalsInput?.total_volume ?? 0)
     const grossRevenueBase = grossRevenueFromImpacts.base > 0 ? grossRevenueFromImpacts.base : Number(baseTotalsInput?.total_revenue ?? 0)
-    const grossRevenueNext = grossRevenueFromImpacts.next > 0 ? grossRevenueFromImpacts.next : Number(selectedTotalsInput?.total_revenue ?? 0)
+    const grossRevenueNextRaw = grossRevenueFromImpacts.next > 0 ? grossRevenueFromImpacts.next : Number(selectedTotalsInput?.total_revenue ?? 0)
     const netRevenueBase = Number(baseTotalsInput?.total_revenue ?? 0)
-    const netRevenueNext = Number(selectedTotalsInput?.total_revenue ?? 0)
+    const netRevenueNextRaw = Number(selectedTotalsInput?.total_revenue ?? 0)
     const profitBase = Number(baseTotalsInput?.total_profit ?? 0)
-    const profitNext = Number(selectedTotalsInput?.total_profit ?? 0)
+    const profitNextRaw = Number(selectedTotalsInput?.total_profit ?? 0)
+
+    const volumeNext = applyBaselineShift(volumeBase, volumeNextRaw, IMPACT_BASELINE_SHIFT.volumePct)
+    const grossRevenueNext = applyBaselineShift(grossRevenueBase, grossRevenueNextRaw, IMPACT_BASELINE_SHIFT.revenuePct)
+    const netRevenueNext = applyBaselineShift(netRevenueBase, netRevenueNextRaw, IMPACT_BASELINE_SHIFT.revenuePct)
+    const profitNext = applyBaselineShift(profitBase, profitNextRaw, IMPACT_BASELINE_SHIFT.profitPct)
 
     return [
       {
         label: 'Volume',
-        pct: calcPct(selectedTotalsInput?.total_volume ?? 0, baseTotalsInput?.total_volume ?? 0, false),
-        base: baseTotalsInput?.total_volume ?? 0,
-        next: selectedTotalsInput?.total_volume ?? 0,
+        pct: calcPct(volumeNext, volumeBase, false),
+        base: volumeBase,
+        next: volumeNext,
         money: false,
       },
       {
@@ -874,6 +893,7 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
 
   const openSaveDialog = () => {
     if (!inScenarioMode && !defaultGroupCalendars.length) return
+    setScenarioPreviewId(null)
     const nextIndex = savedCalendars.length + 1
     setSaveDialogName(`Promo calendar ${nextIndex}`)
     setIsSaveDialogOpen(true)
@@ -1036,7 +1056,7 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
 
         {isSaveDialogOpen && (
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/35 px-4"
+            className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/35 px-4"
             onClick={() => setIsSaveDialogOpen(false)}
           >
             <div
@@ -1552,6 +1572,9 @@ const PromoCalendarPage = ({ layoutProps = {} }) => {
                   </div>
                 ))}
               </div>
+              <p className="mt-3 text-xs font-medium text-slate-500">
+                Includes inherited baseline forecast before discount effects: volume {formatImpactPct(IMPACT_BASELINE_SHIFT.volumePct)}, revenue {formatImpactPct(IMPACT_BASELINE_SHIFT.revenuePct)}, gross margin {formatImpactPct(IMPACT_BASELINE_SHIFT.profitPct)}.
+              </p>
             </div>
 
             <div className="panel p-4">
